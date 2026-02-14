@@ -3,8 +3,16 @@ import Observation
 
 @Observable
 public final class LanguageModelSession: @unchecked Sendable {
-    public var isResponding: Bool { state.access { $0.isResponding } }
-    public var transcript: Transcript { state.access { $0.transcript } }
+    public var isResponding: Bool {
+        access(keyPath: \.isResponding)
+        return state.access { $0.isResponding }
+    }
+
+    public var transcript: Transcript {
+        access(keyPath: \.transcript)
+        return state.access { $0.transcript }
+    }
+
     @ObservationIgnored private let state: Locked<State>
 
     private let model: any LanguageModel
@@ -91,11 +99,15 @@ public final class LanguageModelSession: @unchecked Sendable {
     }
 
     nonisolated private func beginResponding() {
-        state.access { $0.beginResponding() }
+        withMutation(keyPath: \.isResponding) {
+            state.access { $0.beginResponding() }
+        }
     }
 
     nonisolated private func endResponding() {
-        state.access { $0.endResponding() }
+        withMutation(keyPath: \.isResponding) {
+            state.access { $0.endResponding() }
+        }
     }
 
     nonisolated private func wrapRespond<T>(_ operation: () async throws -> T) async throws -> T {
@@ -143,7 +155,9 @@ public final class LanguageModelSession: @unchecked Sendable {
                                 segments: [.text(.init(content: textContent))]
                             )
                         )
-                        session.state.access { $0.transcript.append(responseEntry) }
+                        session.withMutation(keyPath: \.transcript) {
+                            session.state.access { $0.transcript.append(responseEntry) }
+                        }
                     }
                 } catch {
                     continuation.finish(throwing: error)
@@ -191,7 +205,9 @@ public final class LanguageModelSession: @unchecked Sendable {
                     responseFormat: nil
                 )
             )
-            state.access { $0.transcript.append(promptEntry) }
+            withMutation(keyPath: \.transcript) {
+                state.access { $0.transcript.append(promptEntry) }
+            }
 
             let response = try await model.respond(
                 within: self,
@@ -217,9 +233,11 @@ public final class LanguageModelSession: @unchecked Sendable {
             )
 
             // Add tool entries and response to transcript
-            state.access { state in
-                state.transcript.append(contentsOf: response.transcriptEntries)
-                state.transcript.append(responseEntry)
+            withMutation(keyPath: \.transcript) {
+                state.access { state in
+                    state.transcript.append(contentsOf: response.transcriptEntries)
+                    state.transcript.append(responseEntry)
+                }
             }
 
             return response
@@ -240,7 +258,9 @@ public final class LanguageModelSession: @unchecked Sendable {
                 responseFormat: nil
             )
         )
-        state.access { $0.transcript.append(promptEntry) }
+        withMutation(keyPath: \.transcript) {
+            state.access { $0.transcript.append(promptEntry) }
+        }
 
         return wrapStream(
             model.streamResponse(
@@ -534,7 +554,9 @@ extension LanguageModelSession {
                     responseFormat: nil
                 )
             )
-            state.access { $0.transcript.append(promptEntry) }
+            withMutation(keyPath: \.transcript) {
+                state.access { $0.transcript.append(promptEntry) }
+            }
 
             // Extract text content for the Prompt parameter
             let textPrompt = Prompt(prompt)
@@ -563,9 +585,11 @@ extension LanguageModelSession {
             )
 
             // Add tool entries and response to transcript
-            state.access { state in
-                state.transcript.append(contentsOf: response.transcriptEntries)
-                state.transcript.append(responseEntry)
+            withMutation(keyPath: \.transcript) {
+                state.access { state in
+                    state.transcript.append(contentsOf: response.transcriptEntries)
+                    state.transcript.append(responseEntry)
+                }
             }
 
             return response
@@ -636,7 +660,9 @@ extension LanguageModelSession {
                 responseFormat: nil
             )
         )
-        state.access { $0.transcript.append(promptEntry) }
+        withMutation(keyPath: \.transcript) {
+            state.access { $0.transcript.append(promptEntry) }
+        }
 
         // Extract text content for the Prompt parameter
         let textPrompt = Prompt(prompt)
