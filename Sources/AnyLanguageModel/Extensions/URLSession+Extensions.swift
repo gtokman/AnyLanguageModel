@@ -22,10 +22,12 @@ enum HTTP {
     /// concurrent access (`URLSession._MultiHandle.endOperation(for:)`).
     ///
     /// This gate intentionally allows only one in-flight request path at a time on Linux.
+    /// This fully serializes HTTP request setup paths on Linux and reduces request-level
+    /// parallelism, which can lower throughput for heavily concurrent workloads.
     /// Keep this scoped to Linux-only code paths until the upstream issue is resolved.
     ///
     /// See: https://github.com/swiftlang/swift-corelibs-foundation/issues/4791
-    private actor LinuxURLSessionRequestGate {
+    actor LinuxURLSessionRequestGate {
         static let shared = LinuxURLSessionRequestGate()
 
         private var isLocked = false
@@ -207,74 +209,17 @@ extension URLSession {
                     }
 
                     #if canImport(FoundationNetworking)
-                        try await LinuxURLSessionRequestGate.shared.withLock {
-                            let asyncBytesAndResponse = try await self.linuxBytes(for: request)
-                            let (asyncBytes, response) = asyncBytesAndResponse
-
-                            guard let httpResponse = response as? HTTPURLResponse else {
-                                throw URLSessionError.invalidResponse
-                            }
-
-                            guard (200 ..< 300).contains(httpResponse.statusCode) else {
-                                var errorData = Data()
-                                for try await byte in asyncBytes {
-                                    errorData.append(byte)
-                                }
-                                if let errorString = String(data: errorData, encoding: .utf8) {
-                                    throw URLSessionError.httpError(
-                                        statusCode: httpResponse.statusCode,
-                                        detail: errorString
-                                    )
-                                }
-                                throw URLSessionError.httpError(
-                                    statusCode: httpResponse.statusCode,
-                                    detail: "Invalid response"
-                                )
-                            }
-
-                            let decoder = JSONDecoder()
-
-                            for try await event in asyncBytes.events {
-                                guard let data = event.data.data(using: .utf8) else { continue }
-                                if let decoded = try? decoder.decode(T.self, from: data) {
-                                    continuation.yield(decoded)
-                                }
-                            }
+                        let asyncBytes = try await LinuxURLSessionRequestGate.shared.withLock {
+                            let (bytes, response) = try await self.linuxBytes(for: request)
+                            try await self.validateEventStreamResponse(response, asyncBytes: bytes)
+                            return bytes
                         }
+                        try await decodeAndYieldEventStream(asyncBytes, to: continuation)
                     #else
                         let (asyncBytes, response) = try await self.bytes(for: request)
-
-                        guard let httpResponse = response as? HTTPURLResponse else {
-                            throw URLSessionError.invalidResponse
-                        }
-
-                        guard (200 ..< 300).contains(httpResponse.statusCode) else {
-                            var errorData = Data()
-                            for try await byte in asyncBytes {
-                                errorData.append(byte)
-                            }
-                            if let errorString = String(data: errorData, encoding: .utf8) {
-                                throw URLSessionError.httpError(
-                                    statusCode: httpResponse.statusCode,
-                                    detail: errorString
-                                )
-                            }
-                            throw URLSessionError.httpError(
-                                statusCode: httpResponse.statusCode,
-                                detail: "Invalid response"
-                            )
-                        }
-
-                        let decoder = JSONDecoder()
-
-                        for try await event in asyncBytes.events {
-                            guard let data = event.data.data(using: .utf8) else { continue }
-                            if let decoded = try? decoder.decode(T.self, from: data) {
-                                continuation.yield(decoded)
-                            }
-                        }
+                        try await validateEventStreamResponse(response, asyncBytes: asyncBytes)
+                        try await decodeAndYieldEventStream(asyncBytes, to: continuation)
                     #endif
-
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
@@ -283,6 +228,39 @@ extension URLSession {
 
             continuation.onTermination = { _ in
                 task.cancel()
+            }
+        }
+    }
+
+    private func validateEventStreamResponse<Bytes>(
+        _ response: URLResponse,
+        asyncBytes: Bytes
+    ) async throws where Bytes: AsyncSequence, Bytes.Element == UInt8 {
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw URLSessionError.invalidResponse
+        }
+
+        guard (200 ..< 300).contains(httpResponse.statusCode) else {
+            var errorData = Data()
+            for try await byte in asyncBytes {
+                errorData.append(byte)
+            }
+            if let errorString = String(data: errorData, encoding: .utf8) {
+                throw URLSessionError.httpError(statusCode: httpResponse.statusCode, detail: errorString)
+            }
+            throw URLSessionError.httpError(statusCode: httpResponse.statusCode, detail: "Invalid response")
+        }
+    }
+
+    private func decodeAndYieldEventStream<T: Decodable & Sendable, Bytes>(
+        _ asyncBytes: Bytes,
+        to continuation: AsyncThrowingStream<T, any Error>.Continuation
+    ) async throws where Bytes: AsyncSequence, Bytes.Element == UInt8 {
+        let decoder = JSONDecoder()
+        for try await event in asyncBytes.events {
+            guard let data = event.data.data(using: .utf8) else { continue }
+            if let decoded = try? decoder.decode(T.self, from: data) {
+                continuation.yield(decoded)
             }
         }
     }

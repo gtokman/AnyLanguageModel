@@ -19,3 +19,90 @@ struct URLSessionExtensionsTests {
         #expect(error.description == "Decoding error: keyNotFound")
     }
 }
+
+#if canImport(FoundationNetworking)
+    private actor GateCounter {
+        private(set) var current = 0
+        private(set) var maxConcurrent = 0
+
+        func enter() {
+            current += 1
+            maxConcurrent = max(maxConcurrent, current)
+        }
+
+        func leave() {
+            current -= 1
+        }
+    }
+
+    private enum GateTestError: Error {
+        case expected
+    }
+
+    extension URLSessionExtensionsTests {
+        @Test func linuxGateSerializesConcurrentOperations() async throws {
+            let gate = LinuxURLSessionRequestGate()
+            let counter = GateCounter()
+
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                for _ in 0 ..< 8 {
+                    group.addTask {
+                        try await gate.withLock {
+                            await counter.enter()
+                            do {
+                                try await Task.sleep(for: .milliseconds(20))
+                                await counter.leave()
+                            } catch {
+                                await counter.leave()
+                                throw error
+                            }
+                        }
+                    }
+                }
+                try await group.waitForAll()
+            }
+
+            #expect(await counter.maxConcurrent == 1)
+        }
+
+        @Test func linuxGateReleasesAfterError() async throws {
+            let gate = LinuxURLSessionRequestGate()
+
+            do {
+                _ = try await gate.withLock {
+                    throw GateTestError.expected
+                }
+                Issue.record("Expected error was not thrown")
+            } catch GateTestError.expected {
+                // expected
+            }
+
+            var ranSecondOperation = false
+            _ = try await gate.withLock {
+                ranSecondOperation = true
+            }
+            #expect(ranSecondOperation)
+        }
+
+        @Test func linuxGateReleasesAfterCancellation() async throws {
+            let gate = LinuxURLSessionRequestGate()
+
+            let longTask = Task {
+                try await gate.withLock {
+                    try await Task.sleep(for: .seconds(10))
+                }
+            }
+
+            try await Task.sleep(for: .milliseconds(30))
+            longTask.cancel()
+            _ = await longTask.result
+
+            var acquiredAfterCancellation = false
+            _ = try await gate.withLock {
+                acquiredAfterCancellation = true
+            }
+
+            #expect(acquiredAfterCancellation)
+        }
+    }
+#endif
