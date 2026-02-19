@@ -33,7 +33,7 @@ enum HTTP {
         private var isLocked = false
         private var waiters: [CheckedContinuation<Void, Never>] = []
 
-        private func acquire() async {
+        func acquire() async {
             if !isLocked {
                 isLocked = true
                 return
@@ -44,7 +44,7 @@ enum HTTP {
             }
         }
 
-        private func release() {
+        func release() {
             if waiters.isEmpty {
                 isLocked = false
                 return
@@ -54,13 +54,20 @@ enum HTTP {
             continuation.resume()
         }
 
-        /// Executes an async operation while holding the gate lock.
-        func withLock<T>(
-            _ operation: () async throws -> T
-        ) async rethrows -> T {
-            await acquire()
-            defer { release() }
-            return try await operation()
+    }
+
+    func withLinuxRequestLock<T>(
+        _ operation: () async throws -> T
+    ) async rethrows -> T {
+        let gate = LinuxURLSessionRequestGate.shared
+        await gate.acquire()
+        do {
+            let result = try await operation()
+            await gate.release()
+            return result
+        } catch {
+            await gate.release()
+            throw error
         }
     }
 #endif
@@ -87,7 +94,7 @@ extension URLSession {
         }
 
         #if canImport(FoundationNetworking)
-            let dataAndResponse = try await LinuxURLSessionRequestGate.shared.withLock {
+            let dataAndResponse = try await withLinuxRequestLock {
                 try await data(for: request)
             }
             let (data, response) = dataAndResponse
@@ -143,7 +150,7 @@ extension URLSession {
                     }
 
                     #if canImport(FoundationNetworking)
-                        let dataAndResponse = try await LinuxURLSessionRequestGate.shared.withLock {
+                        let dataAndResponse = try await withLinuxRequestLock {
                             try await self.data(for: request)
                         }
                         let (data, response) = dataAndResponse
@@ -209,7 +216,7 @@ extension URLSession {
                     }
 
                     #if canImport(FoundationNetworking)
-                        let asyncBytes = try await LinuxURLSessionRequestGate.shared.withLock {
+                        let asyncBytes = try await withLinuxRequestLock {
                             let (bytes, response) = try await self.linuxBytes(for: request)
                             try await self.validateEventStreamResponse(response, asyncBytes: bytes)
                             return bytes

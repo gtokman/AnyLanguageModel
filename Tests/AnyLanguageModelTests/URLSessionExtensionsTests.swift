@@ -41,13 +41,12 @@ struct URLSessionExtensionsTests {
 
     extension URLSessionExtensionsTests {
         @Test func linuxGateSerializesConcurrentOperations() async throws {
-            let gate = LinuxURLSessionRequestGate()
             let counter = GateCounter()
 
             try await withThrowingTaskGroup(of: Void.self) { group in
                 for _ in 0 ..< 8 {
                     group.addTask {
-                        try await gate.withLock {
+                        try await withLinuxRequestLock {
                             await counter.enter()
                             do {
                                 try await Task.sleep(for: .milliseconds(20))
@@ -66,10 +65,8 @@ struct URLSessionExtensionsTests {
         }
 
         @Test func linuxGateReleasesAfterError() async throws {
-            let gate = LinuxURLSessionRequestGate()
-
             do {
-                _ = try await gate.withLock {
+                try await withLinuxRequestLock {
                     throw GateTestError.expected
                 }
                 Issue.record("Expected error was not thrown")
@@ -78,17 +75,15 @@ struct URLSessionExtensionsTests {
             }
 
             var ranSecondOperation = false
-            _ = try await gate.withLock {
+            try await withLinuxRequestLock {
                 ranSecondOperation = true
             }
             #expect(ranSecondOperation)
         }
 
         @Test func linuxGateReleasesAfterCancellation() async throws {
-            let gate = LinuxURLSessionRequestGate()
-
             let longTask = Task {
-                try await gate.withLock {
+                try await withLinuxRequestLock {
                     try await Task.sleep(for: .seconds(10))
                 }
             }
@@ -98,7 +93,7 @@ struct URLSessionExtensionsTests {
             _ = await longTask.result
 
             var acquiredAfterCancellation = false
-            _ = try await gate.withLock {
+            try await withLinuxRequestLock {
                 acquiredAfterCancellation = true
             }
 
