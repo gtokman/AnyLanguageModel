@@ -93,14 +93,16 @@ extension URLSession {
         }
 
         #if canImport(FoundationNetworking)
-            var dataAndResponse: (Data, URLResponse)?
+            var lockedData: Data?
+            var lockedResponse: URLResponse?
             try await withLinuxRequestLock {
-                dataAndResponse = try await data(for: request)
+                let (data, response) = try await data(for: request)
+                lockedData = data
+                lockedResponse = response
             }
-            guard let dataAndResponse else {
+            guard let data = lockedData, let response = lockedResponse else {
                 throw URLSessionError.invalidResponse
             }
-            let (data, response) = dataAndResponse
         #else
             let (data, response) = try await data(for: request)
         #endif
@@ -153,14 +155,16 @@ extension URLSession {
                     }
 
                     #if canImport(FoundationNetworking)
-                        var dataAndResponse: (Data, URLResponse)?
+                        var lockedData: Data?
+                        var lockedResponse: URLResponse?
                         try await withLinuxRequestLock {
-                            dataAndResponse = try await self.data(for: request)
+                            let (data, response) = try await self.data(for: request)
+                            lockedData = data
+                            lockedResponse = response
                         }
-                        guard let dataAndResponse else {
+                        guard let data = lockedData, let response = lockedResponse else {
                             throw URLSessionError.invalidResponse
                         }
-                        let (data, response) = dataAndResponse
                     #else
                         let (data, response) = try await self.data(for: request)
                     #endif
@@ -223,13 +227,13 @@ extension URLSession {
                     }
 
                     #if canImport(FoundationNetworking)
-                        var asyncBytes: AsyncThrowingStream<UInt8, Error>?
+                        var lockedAsyncBytes: AsyncThrowingStream<UInt8, Error>?
                         try await withLinuxRequestLock {
                             let (bytes, response) = try await self.linuxBytes(for: request)
                             try await self.validateEventStreamResponse(response, asyncBytes: bytes)
-                            asyncBytes = bytes
+                            lockedAsyncBytes = bytes
                         }
-                        guard let asyncBytes else {
+                        guard let asyncBytes = lockedAsyncBytes else {
                             throw URLSessionError.invalidResponse
                         }
                         try await decodeAndYieldEventStream(asyncBytes, to: continuation)
