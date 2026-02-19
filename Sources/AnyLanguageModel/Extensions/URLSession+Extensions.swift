@@ -56,15 +56,14 @@ enum HTTP {
 
     }
 
-    func withLinuxRequestLock<T>(
-        _ operation: () async throws -> T
-    ) async rethrows -> T {
+    func withLinuxRequestLock(
+        _ operation: () async throws -> Void
+    ) async throws {
         let gate = LinuxURLSessionRequestGate.shared
         await gate.acquire()
         do {
-            let result = try await operation()
+            try await operation()
             await gate.release()
-            return result
         } catch {
             await gate.release()
             throw error
@@ -94,8 +93,12 @@ extension URLSession {
         }
 
         #if canImport(FoundationNetworking)
-            let dataAndResponse = try await withLinuxRequestLock {
-                try await data(for: request)
+            var dataAndResponse: (Data, URLResponse)?
+            try await withLinuxRequestLock {
+                dataAndResponse = try await data(for: request)
+            }
+            guard let dataAndResponse else {
+                throw URLSessionError.invalidResponse
             }
             let (data, response) = dataAndResponse
         #else
@@ -150,8 +153,12 @@ extension URLSession {
                     }
 
                     #if canImport(FoundationNetworking)
-                        let dataAndResponse = try await withLinuxRequestLock {
-                            try await self.data(for: request)
+                        var dataAndResponse: (Data, URLResponse)?
+                        try await withLinuxRequestLock {
+                            dataAndResponse = try await self.data(for: request)
+                        }
+                        guard let dataAndResponse else {
+                            throw URLSessionError.invalidResponse
                         }
                         let (data, response) = dataAndResponse
                     #else
@@ -216,10 +223,14 @@ extension URLSession {
                     }
 
                     #if canImport(FoundationNetworking)
-                        let asyncBytes = try await withLinuxRequestLock {
+                        var asyncBytes: AsyncThrowingStream<UInt8, Error>?
+                        try await withLinuxRequestLock {
                             let (bytes, response) = try await self.linuxBytes(for: request)
                             try await self.validateEventStreamResponse(response, asyncBytes: bytes)
-                            return bytes
+                            asyncBytes = bytes
+                        }
+                        guard let asyncBytes else {
+                            throw URLSessionError.invalidResponse
                         }
                         try await decodeAndYieldEventStream(asyncBytes, to: continuation)
                     #else
