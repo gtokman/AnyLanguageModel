@@ -13,6 +13,56 @@ enum HTTP {
     }
 }
 
+#if canImport(FoundationNetworking)
+    /// Serializes Linux URLSession operations to mitigate a FoundationNetworking race.
+    ///
+    /// AnyLanguageModel performs many concurrent HTTP requests across model implementations.
+    /// On Linux, `FoundationNetworking` routes `URLSession` through a shared
+    /// `_MultiHandle`, which has a known thread-safety bug that can crash under
+    /// concurrent access (`URLSession._MultiHandle.endOperation(for:)`).
+    ///
+    /// This gate intentionally allows only one in-flight request path at a time on Linux.
+    /// Keep this scoped to Linux-only code paths until the upstream issue is resolved.
+    ///
+    /// See: https://github.com/swiftlang/swift-corelibs-foundation/issues/4791
+    private actor LinuxURLSessionRequestGate {
+        static let shared = LinuxURLSessionRequestGate()
+
+        private var isLocked = false
+        private var waiters: [CheckedContinuation<Void, Never>] = []
+
+        private func acquire() async {
+            if !isLocked {
+                isLocked = true
+                return
+            }
+
+            await withCheckedContinuation { continuation in
+                waiters.append(continuation)
+            }
+        }
+
+        private func release() {
+            if waiters.isEmpty {
+                isLocked = false
+                return
+            }
+
+            let continuation = waiters.removeFirst()
+            continuation.resume()
+        }
+
+        /// Executes an async operation while holding the gate lock.
+        func withLock<T>(
+            _ operation: () async throws -> T
+        ) async rethrows -> T {
+            await acquire()
+            defer { release() }
+            return try await operation()
+        }
+    }
+#endif
+
 extension URLSession {
     func fetch<T: Decodable>(
         _ method: HTTP.Method,
@@ -34,7 +84,14 @@ extension URLSession {
             request.addValue("application/json", forHTTPHeaderField: "Content-Type")
         }
 
-        let (data, response) = try await data(for: request)
+        #if canImport(FoundationNetworking)
+            let dataAndResponse = try await LinuxURLSessionRequestGate.shared.withLock {
+                try await data(for: request)
+            }
+            let (data, response) = dataAndResponse
+        #else
+            let (data, response) = try await data(for: request)
+        #endif
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw URLSessionError.invalidResponse
@@ -83,7 +140,14 @@ extension URLSession {
                         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
                     }
 
-                    let (data, response) = try await self.data(for: request)
+                    #if canImport(FoundationNetworking)
+                        let dataAndResponse = try await LinuxURLSessionRequestGate.shared.withLock {
+                            try await self.data(for: request)
+                        }
+                        let (data, response) = dataAndResponse
+                    #else
+                        let (data, response) = try await self.data(for: request)
+                    #endif
 
                     guard let httpResponse = response as? HTTPURLResponse else {
                         throw URLSessionError.invalidResponse
@@ -143,34 +207,73 @@ extension URLSession {
                     }
 
                     #if canImport(FoundationNetworking)
-                        let (asyncBytes, response) = try await self.linuxBytes(for: request)
+                        try await LinuxURLSessionRequestGate.shared.withLock {
+                            let asyncBytesAndResponse = try await self.linuxBytes(for: request)
+                            let (asyncBytes, response) = asyncBytesAndResponse
+
+                            guard let httpResponse = response as? HTTPURLResponse else {
+                                throw URLSessionError.invalidResponse
+                            }
+
+                            guard (200 ..< 300).contains(httpResponse.statusCode) else {
+                                var errorData = Data()
+                                for try await byte in asyncBytes {
+                                    errorData.append(byte)
+                                }
+                                if let errorString = String(data: errorData, encoding: .utf8) {
+                                    throw URLSessionError.httpError(
+                                        statusCode: httpResponse.statusCode,
+                                        detail: errorString
+                                    )
+                                }
+                                throw URLSessionError.httpError(
+                                    statusCode: httpResponse.statusCode,
+                                    detail: "Invalid response"
+                                )
+                            }
+
+                            let decoder = JSONDecoder()
+
+                            for try await event in asyncBytes.events {
+                                guard let data = event.data.data(using: .utf8) else { continue }
+                                if let decoded = try? decoder.decode(T.self, from: data) {
+                                    continuation.yield(decoded)
+                                }
+                            }
+                        }
                     #else
                         let (asyncBytes, response) = try await self.bytes(for: request)
+
+                        guard let httpResponse = response as? HTTPURLResponse else {
+                            throw URLSessionError.invalidResponse
+                        }
+
+                        guard (200 ..< 300).contains(httpResponse.statusCode) else {
+                            var errorData = Data()
+                            for try await byte in asyncBytes {
+                                errorData.append(byte)
+                            }
+                            if let errorString = String(data: errorData, encoding: .utf8) {
+                                throw URLSessionError.httpError(
+                                    statusCode: httpResponse.statusCode,
+                                    detail: errorString
+                                )
+                            }
+                            throw URLSessionError.httpError(
+                                statusCode: httpResponse.statusCode,
+                                detail: "Invalid response"
+                            )
+                        }
+
+                        let decoder = JSONDecoder()
+
+                        for try await event in asyncBytes.events {
+                            guard let data = event.data.data(using: .utf8) else { continue }
+                            if let decoded = try? decoder.decode(T.self, from: data) {
+                                continuation.yield(decoded)
+                            }
+                        }
                     #endif
-
-                    guard let httpResponse = response as? HTTPURLResponse else {
-                        throw URLSessionError.invalidResponse
-                    }
-
-                    guard (200 ..< 300).contains(httpResponse.statusCode) else {
-                        var errorData = Data()
-                        for try await byte in asyncBytes {
-                            errorData.append(byte)
-                        }
-                        if let errorString = String(data: errorData, encoding: .utf8) {
-                            throw URLSessionError.httpError(statusCode: httpResponse.statusCode, detail: errorString)
-                        }
-                        throw URLSessionError.httpError(statusCode: httpResponse.statusCode, detail: "Invalid response")
-                    }
-
-                    let decoder = JSONDecoder()
-
-                    for try await event in asyncBytes.events {
-                        guard let data = event.data.data(using: .utf8) else { continue }
-                        if let decoded = try? decoder.decode(T.self, from: data) {
-                            continuation.yield(decoded)
-                        }
-                    }
 
                     continuation.finish()
                 } catch {
