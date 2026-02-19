@@ -21,26 +21,48 @@ enum HTTP {
     /// `_MultiHandle`, which has a known thread-safety bug that can crash under
     /// concurrent access (`URLSession._MultiHandle.endOperation(for:)`).
     ///
-    /// This gate intentionally allows only one in-flight request path at a time on Linux.
-    /// This fully serializes HTTP request setup paths on Linux and reduces request-level
-    /// parallelism, which can lower throughput for heavily concurrent workloads.
+    /// This gate intentionally allows only one in-flight request setup path at a time on Linux.
+    /// For non-streaming requests, callers typically hold this lock for the entire
+    /// request/response cycle, effectively serializing those operations and reducing
+    /// request-level parallelism (which can lower throughput for heavily concurrent
+    /// workloads).
+    ///
+    /// For streaming requests, callers usually acquire the gate only during initial
+    /// request setup and then release it once the stream has been established; stream
+    /// consumption itself is not serialized by this gate.
     /// Keep this scoped to Linux-only code paths until the upstream issue is resolved.
     ///
     /// See: https://github.com/swiftlang/swift-corelibs-foundation/issues/4791
     actor LinuxURLSessionRequestGate {
+        private struct Waiter {
+            let id: UUID
+            let continuation: CheckedContinuation<Void, Error>
+        }
+
         static let shared = LinuxURLSessionRequestGate()
 
         private var isLocked = false
-        private var waiters: [CheckedContinuation<Void, Never>] = []
+        private var waiters: [Waiter] = []
 
-        func acquire() async {
+        func acquire() async throws {
+            if Task.isCancelled {
+                throw CancellationError()
+            }
+
             if !isLocked {
                 isLocked = true
                 return
             }
 
-            await withCheckedContinuation { continuation in
-                waiters.append(continuation)
+            let waiterID = UUID()
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { continuation in
+                    waiters.append(Waiter(id: waiterID, continuation: continuation))
+                }
+            } onCancel: {
+                Task {
+                    await self.cancelWaiter(id: waiterID)
+                }
             }
         }
 
@@ -50,8 +72,17 @@ enum HTTP {
                 return
             }
 
-            let continuation = waiters.removeFirst()
-            continuation.resume()
+            let waiter = waiters.removeFirst()
+            waiter.continuation.resume()
+        }
+
+        private func cancelWaiter(id: UUID) {
+            guard let index = waiters.firstIndex(where: { $0.id == id }) else {
+                return
+            }
+
+            let waiter = waiters.remove(at: index)
+            waiter.continuation.resume(throwing: CancellationError())
         }
 
     }
@@ -60,7 +91,7 @@ enum HTTP {
         _ operation: () async throws -> Void
     ) async throws {
         let gate = LinuxURLSessionRequestGate.shared
-        await gate.acquire()
+        try await gate.acquire()
         do {
             try await operation()
             await gate.release()
@@ -228,14 +259,16 @@ extension URLSession {
 
                     #if canImport(FoundationNetworking)
                         var lockedAsyncBytes: AsyncThrowingStream<UInt8, Error>?
+                        var lockedResponse: URLResponse?
                         try await withLinuxRequestLock {
                             let (bytes, response) = try await self.linuxBytes(for: request)
-                            try await self.validateEventStreamResponse(response, asyncBytes: bytes)
                             lockedAsyncBytes = bytes
+                            lockedResponse = response
                         }
-                        guard let asyncBytes = lockedAsyncBytes else {
+                        guard let asyncBytes = lockedAsyncBytes, let response = lockedResponse else {
                             throw URLSessionError.invalidResponse
                         }
+                        try await self.validateEventStreamResponse(response, asyncBytes: asyncBytes)
                         try await decodeAndYieldEventStream(asyncBytes, to: continuation)
                     #else
                         let (asyncBytes, response) = try await self.bytes(for: request)

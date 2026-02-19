@@ -39,6 +39,14 @@ struct URLSessionExtensionsTests {
         case expected
     }
 
+    private actor GateFlag {
+        private(set) var value = false
+
+        func setTrue() {
+            value = true
+        }
+    }
+
     extension URLSessionExtensionsTests {
         @Test func linuxGateSerializesConcurrentOperations() async throws {
             let counter = GateCounter()
@@ -98,6 +106,35 @@ struct URLSessionExtensionsTests {
             }
 
             #expect(acquiredAfterCancellation)
+        }
+
+        @Test func linuxGateCancelledWaiterDoesNotExecute() async throws {
+            let ranCancelledOperation = GateFlag()
+
+            let holder = Task {
+                try await withLinuxRequestLock {
+                    try await Task.sleep(for: .milliseconds(200))
+                }
+            }
+
+            try await Task.sleep(for: .milliseconds(20))
+
+            let waiter = Task {
+                do {
+                    try await withLinuxRequestLock {
+                        await ranCancelledOperation.setTrue()
+                    }
+                } catch {
+                    // Cancellation is expected.
+                }
+            }
+
+            waiter.cancel()
+            _ = await waiter.result
+            try await holder.value
+            try await Task.sleep(for: .milliseconds(20))
+
+            #expect(await ranCancelledOperation.value == false)
         }
     }
 #endif
