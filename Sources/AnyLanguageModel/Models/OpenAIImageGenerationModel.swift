@@ -189,8 +189,15 @@ public struct OpenAIImageGenerationModel: ImageGenerationModel {
         var revisedPrompt: String?
 
         for item in response.data {
-            if let b64 = item.b64_json, let data = Data(base64Encoded: b64) {
-                images.append(Transcript.ImageSegment(data: data, mimeType: mimeType))
+            if let b64 = item.b64_json {
+                // Strip data URI prefix (e.g. "data:image/png;base64,…") that some
+                // OpenAI-compatible providers like xAI return.
+                let raw = b64.hasPrefix("data:")
+                    ? String(b64[b64.range(of: ",")!.upperBound...])
+                    : b64
+                if let data = Data(base64Encoded: raw) {
+                    images.append(Transcript.ImageSegment(data: data, mimeType: mimeType))
+                }
             } else if let urlString = item.url, let url = URL(string: urlString) {
                 images.append(Transcript.ImageSegment(url: url))
             }
