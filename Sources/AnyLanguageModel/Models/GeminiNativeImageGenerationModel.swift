@@ -11,15 +11,23 @@ import JSONSchema
 /// This model uses Gemini models that support image generation through the
 /// standard `generateContent` endpoint with `responseModalities: ["TEXT", "IMAGE"]`.
 ///
+/// Supported models include `gemini-2.5-flash-image` and `gemini-3-pro-image-preview`.
+///
 /// ```swift
 /// let model = GeminiNativeImageGenerationModel(
 ///     apiKey: "your-api-key",
-///     model: "gemini-2.0-flash-preview-image-generation"
+///     model: "gemini-2.5-flash-image"
+/// )
+///
+/// var options = ImageGenerationOptions()
+/// options[custom: GeminiNativeImageGenerationModel.self] = .init(
+///     aspectRatio: .widescreen,
+///     outputMimeType: .png
 /// )
 ///
 /// let result = try await model.generateImages(
 ///     for: "Draw a cute robot waving hello",
-///     options: ImageGenerationOptions()
+///     options: options
 /// )
 /// ```
 public struct GeminiNativeImageGenerationModel: ImageGenerationModel {
@@ -33,8 +41,63 @@ public struct GeminiNativeImageGenerationModel: ImageGenerationModel {
 
     /// Custom image generation options specific to Gemini native image generation.
     public struct CustomImageGenerationOptions: AnyLanguageModel.CustomImageGenerationOptions {
+        /// The aspect ratio of the generated image.
+        public var aspectRatio: AspectRatio?
+
+        /// The resolution of the generated image.
+        ///
+        /// `gemini-3-pro-image-preview` supports all resolutions including `.ultraHD`.
+        /// Other models support up to `.hd`.
+        public var imageSize: ImageResolution?
+
+        /// The MIME type of the output image.
+        public var outputMimeType: OutputMimeType?
+
+        /// Supported aspect ratios for Gemini native image generation.
+        public enum AspectRatio: String, Sendable, Hashable {
+            /// Square (1:1).
+            case square = "1:1"
+            /// Standard landscape (4:3).
+            case standard = "4:3"
+            /// Standard portrait (3:4).
+            case standardPortrait = "3:4"
+            /// Widescreen landscape (16:9).
+            case widescreen = "16:9"
+            /// Widescreen portrait (9:16).
+            case widescreenPortrait = "9:16"
+        }
+
+        /// Supported image resolutions for Gemini native image generation.
+        public enum ImageResolution: String, Sendable, Hashable {
+            /// 1K resolution (1024px).
+            case standard = "1024"
+            /// 2K resolution (2048px).
+            case hd = "2048"
+            /// 4K resolution (4096px). Only available with `gemini-3-pro-image-preview`.
+            case ultraHD = "4096"
+        }
+
+        /// Supported output MIME types for Gemini native image generation.
+        public enum OutputMimeType: String, Sendable, Hashable {
+            case png = "image/png"
+            case jpeg = "image/jpeg"
+        }
+
         /// Creates custom image generation options for Gemini native image generation.
-        public init() {}
+        ///
+        /// - Parameters:
+        ///   - aspectRatio: The aspect ratio of the generated image.
+        ///   - imageSize: The resolution of the generated image.
+        ///   - outputMimeType: The MIME type of the output image.
+        public init(
+            aspectRatio: AspectRatio? = nil,
+            imageSize: ImageResolution? = nil,
+            outputMimeType: OutputMimeType? = nil
+        ) {
+            self.aspectRatio = aspectRatio
+            self.imageSize = imageSize
+            self.outputMimeType = outputMimeType
+        }
     }
 
     /// The base URL for the API endpoint.
@@ -63,7 +126,7 @@ public struct GeminiNativeImageGenerationModel: ImageGenerationModel {
         baseURL: URL = defaultBaseURL,
         apiVersion: String = defaultAPIVersion,
         apiKey tokenProvider: @escaping @autoclosure @Sendable () -> String,
-        model: String = "gemini-2.0-flash-preview-image-generation",
+        model: String = "gemini-2.5-flash-image",
         session: URLSession = URLSession(configuration: .default)
     ) {
         var baseURL = baseURL
@@ -170,10 +233,46 @@ extension GeminiNativeImageGenerationModel {
             generationConfig["candidateCount"] = .int(n)
         }
 
+        let customOptions = options[custom: GeminiNativeImageGenerationModel.self]
+
+        var imageConfig: [String: JSONValue] = [:]
+
+        // Custom aspect ratio takes precedence over standard size
+        if let aspectRatio = customOptions?.aspectRatio {
+            imageConfig["aspectRatio"] = .string(aspectRatio.rawValue)
+        } else if let size = options.size {
+            imageConfig["aspectRatio"] = .string(nativeAspectRatio(size))
+        }
+
+        if let imageSize = customOptions?.imageSize {
+            imageConfig["imageSize"] = .string(imageSize.rawValue)
+        }
+
+        if let outputMimeType = customOptions?.outputMimeType {
+            imageConfig["outputMimeType"] = .string(outputMimeType.rawValue)
+        }
+
+        if !imageConfig.isEmpty {
+            generationConfig["imageConfig"] = .object(imageConfig)
+        }
+
         return [
             "contents": .array([contents]),
             "generationConfig": .object(generationConfig),
         ]
+    }
+
+    private func nativeAspectRatio(_ size: ImageGenerationOptions.ImageSize) -> String {
+        switch size {
+        case .square:
+            return "1:1"
+        case .landscape:
+            return "16:9"
+        case .portrait:
+            return "9:16"
+        case .custom(let width, let height):
+            return "\(width):\(height)"
+        }
     }
 }
 

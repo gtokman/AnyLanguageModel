@@ -13,7 +13,7 @@ import JSONSchema
 /// ```swift
 /// let model = GeminiImagenModel(
 ///     apiKey: "your-api-key",
-///     model: "imagen-3.0-generate-002"
+///     model: "imagen-4.0-generate-001"
 /// )
 ///
 /// let result = try await model.generateImages(
@@ -105,13 +105,13 @@ public struct GeminiImagenModel: ImageGenerationModel {
     ///   - baseURL: The base URL for the Gemini API.
     ///   - apiVersion: The API version to use.
     ///   - apiKey: Your Gemini API key or a closure that returns it.
-    ///   - model: The model identifier (for example, "imagen-3.0-generate-002").
+    ///   - model: The model identifier (for example, "imagen-4.0-generate-001").
     ///   - session: The URL session to use for network requests.
     public init(
         baseURL: URL = defaultBaseURL,
         apiVersion: String = defaultAPIVersion,
         apiKey tokenProvider: @escaping @autoclosure @Sendable () -> String,
-        model: String = "imagen-3.0-generate-002",
+        model: String = "imagen-4.0-generate-001",
         session: URLSession = URLSession(configuration: .default)
     ) {
         var baseURL = baseURL

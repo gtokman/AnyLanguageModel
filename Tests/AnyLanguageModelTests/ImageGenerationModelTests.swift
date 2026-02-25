@@ -462,16 +462,16 @@ struct GeminiImagenModelTests {
 
     @Test func defaultInitialization() {
         let model = GeminiImagenModel(apiKey: "test-key")
-        #expect(model.model == "imagen-3.0-generate-002")
+        #expect(model.model == "imagen-4.0-generate-001")
         #expect(model.apiVersion == "v1beta")
     }
 
     @Test func customInitialization() {
         let model = GeminiImagenModel(
             apiKey: "test-key",
-            model: "imagen-3.0-generate-001"
+            model: "imagen-4.0-generate-001"
         )
-        #expect(model.model == "imagen-3.0-generate-001")
+        #expect(model.model == "imagen-4.0-generate-001")
     }
 
     @Test func isAlwaysAvailable() {
@@ -606,16 +606,16 @@ struct GeminiNativeImageGenerationModelTests {
 
     @Test func defaultInitialization() {
         let model = GeminiNativeImageGenerationModel(apiKey: "test-key")
-        #expect(model.model == "gemini-2.0-flash-preview-image-generation")
+        #expect(model.model == "gemini-2.5-flash-image")
         #expect(model.apiVersion == "v1beta")
     }
 
     @Test func customInitialization() {
         let model = GeminiNativeImageGenerationModel(
             apiKey: "test-key",
-            model: "gemini-2.0-flash-exp"
+            model: "gemini-3-pro-image-preview"
         )
-        #expect(model.model == "gemini-2.0-flash-exp")
+        #expect(model.model == "gemini-3-pro-image-preview")
     }
 
     @Test func isAlwaysAvailable() {
@@ -663,9 +663,162 @@ struct GeminiNativeImageGenerationModelTests {
     }
 
     @Test func customOptionsEquality() {
-        let options1 = GeminiNativeImageGenerationModel.CustomImageGenerationOptions()
-        let options2 = GeminiNativeImageGenerationModel.CustomImageGenerationOptions()
+        let options1 = GeminiNativeImageGenerationModel.CustomImageGenerationOptions(
+            aspectRatio: .widescreen, imageSize: .hd, outputMimeType: .png
+        )
+        let options2 = GeminiNativeImageGenerationModel.CustomImageGenerationOptions(
+            aspectRatio: .widescreen, imageSize: .hd, outputMimeType: .png
+        )
         #expect(options1 == options2)
+    }
+
+    @Test func customOptionsInequality() {
+        let options1 = GeminiNativeImageGenerationModel.CustomImageGenerationOptions(
+            aspectRatio: .widescreen
+        )
+        let options2 = GeminiNativeImageGenerationModel.CustomImageGenerationOptions(
+            aspectRatio: .square
+        )
+        #expect(options1 != options2)
+    }
+
+    @Test func customOptionsNilProperties() {
+        let options = GeminiNativeImageGenerationModel.CustomImageGenerationOptions()
+        #expect(options.aspectRatio == nil)
+        #expect(options.imageSize == nil)
+        #expect(options.outputMimeType == nil)
+    }
+
+    @Test func aspectRatioRawValues() {
+        typealias AR = GeminiNativeImageGenerationModel.CustomImageGenerationOptions.AspectRatio
+        #expect(AR.square.rawValue == "1:1")
+        #expect(AR.standard.rawValue == "4:3")
+        #expect(AR.standardPortrait.rawValue == "3:4")
+        #expect(AR.widescreen.rawValue == "16:9")
+        #expect(AR.widescreenPortrait.rawValue == "9:16")
+    }
+
+    @Test func imageResolutionRawValues() {
+        typealias IR = GeminiNativeImageGenerationModel.CustomImageGenerationOptions.ImageResolution
+        #expect(IR.standard.rawValue == "1024")
+        #expect(IR.hd.rawValue == "2048")
+        #expect(IR.ultraHD.rawValue == "4096")
+    }
+
+    @Test func outputMimeTypeRawValues() {
+        typealias MT = GeminiNativeImageGenerationModel.CustomImageGenerationOptions.OutputMimeType
+        #expect(MT.png.rawValue == "image/png")
+        #expect(MT.jpeg.rawValue == "image/jpeg")
+    }
+
+    @Test func requestBodyWithCustomOptions() {
+        let model = GeminiNativeImageGenerationModel(apiKey: "test-key")
+        var options = ImageGenerationOptions()
+        options[custom: GeminiNativeImageGenerationModel.self] = .init(
+            aspectRatio: .widescreen,
+            imageSize: .hd,
+            outputMimeType: .png
+        )
+
+        let body = model.createRequestBody(prompt: "A landscape", options: options)
+
+        if case .object(let config) = body["generationConfig"],
+            case .object(let imageConfig) = config["imageConfig"]
+        {
+            #expect(imageConfig["aspectRatio"] == .string("16:9"))
+            #expect(imageConfig["imageSize"] == .string("2048"))
+            #expect(imageConfig["outputMimeType"] == .string("image/png"))
+        } else {
+            Issue.record("Expected generationConfig with imageConfig")
+        }
+    }
+
+    @Test func requestBodyWithPartialCustomOptions() {
+        let model = GeminiNativeImageGenerationModel(apiKey: "test-key")
+        var options = ImageGenerationOptions()
+        options[custom: GeminiNativeImageGenerationModel.self] = .init(
+            aspectRatio: .square
+        )
+
+        let body = model.createRequestBody(prompt: "test", options: options)
+
+        if case .object(let config) = body["generationConfig"],
+            case .object(let imageConfig) = config["imageConfig"]
+        {
+            #expect(imageConfig["aspectRatio"] == .string("1:1"))
+            #expect(imageConfig["imageSize"] == nil)
+            #expect(imageConfig["outputMimeType"] == nil)
+        } else {
+            Issue.record("Expected generationConfig with imageConfig")
+        }
+    }
+
+    @Test func requestBodyWithStandardSize() {
+        let model = GeminiNativeImageGenerationModel(apiKey: "test-key")
+        let options = ImageGenerationOptions(size: .landscape)
+
+        let body = model.createRequestBody(prompt: "test", options: options)
+
+        if case .object(let config) = body["generationConfig"],
+            case .object(let imageConfig) = config["imageConfig"]
+        {
+            #expect(imageConfig["aspectRatio"] == .string("16:9"))
+        } else {
+            Issue.record("Expected generationConfig with imageConfig")
+        }
+    }
+
+    @Test func customAspectRatioOverridesStandardSize() {
+        let model = GeminiNativeImageGenerationModel(apiKey: "test-key")
+        var options = ImageGenerationOptions(size: .square)
+        options[custom: GeminiNativeImageGenerationModel.self] = .init(
+            aspectRatio: .standard
+        )
+
+        let body = model.createRequestBody(prompt: "test", options: options)
+
+        if case .object(let config) = body["generationConfig"],
+            case .object(let imageConfig) = config["imageConfig"]
+        {
+            // Custom aspect ratio (4:3) should override standard size (1:1)
+            #expect(imageConfig["aspectRatio"] == .string("4:3"))
+        } else {
+            Issue.record("Expected generationConfig with imageConfig")
+        }
+    }
+
+    @Test func noImageConfigWhenNoOptionsSet() {
+        let model = GeminiNativeImageGenerationModel(apiKey: "test-key")
+        let options = ImageGenerationOptions()
+
+        let body = model.createRequestBody(prompt: "test", options: options)
+
+        if case .object(let config) = body["generationConfig"] {
+            #expect(config["imageConfig"] == nil)
+        } else {
+            Issue.record("Expected generationConfig")
+        }
+    }
+
+    @Test func requestBodyWithUltraHDResolution() {
+        let model = GeminiNativeImageGenerationModel(
+            apiKey: "test-key",
+            model: "gemini-3-pro-image-preview"
+        )
+        var options = ImageGenerationOptions()
+        options[custom: GeminiNativeImageGenerationModel.self] = .init(
+            imageSize: .ultraHD
+        )
+
+        let body = model.createRequestBody(prompt: "test", options: options)
+
+        if case .object(let config) = body["generationConfig"],
+            case .object(let imageConfig) = config["imageConfig"]
+        {
+            #expect(imageConfig["imageSize"] == .string("4096"))
+        } else {
+            Issue.record("Expected generationConfig with imageConfig")
+        }
     }
 
     @Test func requestBodyWithInputImages() {

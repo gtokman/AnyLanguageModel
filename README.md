@@ -524,7 +524,7 @@ let result = try await model.generateImages(
 // Gemini Native image editing
 let model = GeminiNativeImageGenerationModel(
     apiKey: ProcessInfo.processInfo.environment["GEMINI_API_KEY"]!,
-    model: "gemini-2.0-flash-preview-image-generation"
+    model: "gemini-2.5-flash-image"
 )
 
 let sourceImage = Transcript.ImageSegment(data: imageData, mimeType: "image/png")
@@ -1091,7 +1091,7 @@ via the predict endpoint:
 ```swift
 let imagenModel = GeminiImagenModel(
     apiKey: ProcessInfo.processInfo.environment["GEMINI_API_KEY"]!,
-    model: "imagen-3.0-generate-002"
+    model: "imagen-4.0-generate-001"
 )
 
 let result = try await imagenModel.generateImages(
@@ -1118,13 +1118,14 @@ let result = try await imagenModel.generateImages(
 )
 ```
 
-**Native Gemini** — Uses the `generateContent` API with image output modalities,
-allowing Gemini models to generate images alongside text:
+**Native Gemini** — Uses the `generateContent` API with image output modalities.
+Models like `gemini-2.5-flash-image` and `gemini-3-pro-image-preview` can generate
+images alongside text:
 
 ```swift
 let nativeModel = GeminiNativeImageGenerationModel(
     apiKey: ProcessInfo.processInfo.environment["GEMINI_API_KEY"]!,
-    model: "gemini-2.0-flash-preview-image-generation"
+    model: "gemini-2.5-flash-image"
 )
 
 let result = try await nativeModel.generateImages(
@@ -1137,6 +1138,25 @@ if let text = result.revisedPrompt {
     print("Model said: \(text)")
 }
 ```
+
+Configure aspect ratio, resolution, and output format through custom options:
+
+```swift
+var options = ImageGenerationOptions()
+options[custom: GeminiNativeImageGenerationModel.self] = .init(
+    aspectRatio: .widescreen,        // .square, .standard, .standardPortrait, .widescreen, .widescreenPortrait
+    imageSize: .hd,                  // .standard (1K), .hd (2K), .ultraHD (4K, gemini-3-pro only)
+    outputMimeType: .png             // .png, .jpeg
+)
+
+let result = try await nativeModel.generateImages(
+    for: "A panoramic mountain landscape at sunset",
+    options: options
+)
+```
+
+You can also use the standard `ImageGenerationOptions.size` property, which maps to
+aspect ratio automatically (`.square` → 1:1, `.landscape` → 16:9, `.portrait` → 9:16).
 
 Native Gemini also supports image editing by passing `inputImages`:
 
