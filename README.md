@@ -772,6 +772,32 @@ let result = try await imageModel.generateImages(
 )
 ```
 
+Since `OpenAIImageGenerationModel` accepts a custom base URL,
+it also works with OpenAI-compatible image generation APIs like
+[xAI's Grok](https://docs.x.ai/developers/model-capabilities/images/generation).
+Use `extraBody` to pass vendor-specific parameters:
+
+```swift
+let grokModel = OpenAIImageGenerationModel(
+    baseURL: URL(string: "https://api.x.ai/v1/")!,
+    apiKey: ProcessInfo.processInfo.environment["XAI_API_KEY"]!,
+    model: "grok-imagine-image"
+)
+
+var options = ImageGenerationOptions(numberOfImages: 2)
+options[custom: OpenAIImageGenerationModel.self] = .init(
+    extraBody: [
+        "aspect_ratio": .string("16:9"),
+        "resolution": .string("2k")
+    ]
+)
+
+let result = try await grokModel.generateImages(
+    for: "A futuristic cityscape at night",
+    options: options
+)
+```
+
 ### Open Responses
 
 Connects to any API that conforms to the 

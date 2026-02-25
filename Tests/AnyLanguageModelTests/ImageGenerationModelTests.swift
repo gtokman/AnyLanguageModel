@@ -283,6 +283,38 @@ struct OpenAIImageGenerationModelTests {
         #expect(options.background == nil)
         #expect(options.outputFormat == nil)
         #expect(options.style == nil)
+        #expect(options.extraBody == nil)
+    }
+
+    @Test func extraBodyMergedIntoRequest() throws {
+        let model = OpenAIImageGenerationModel(apiKey: "test-key")
+        var options = ImageGenerationOptions()
+        options[custom: OpenAIImageGenerationModel.self] = .init(
+            extraBody: [
+                "aspect_ratio": .string("16:9"),
+                "resolution": .string("2k"),
+            ]
+        )
+
+        let body = try model.createRequestBody(prompt: "test", options: options)
+
+        #expect(body["aspect_ratio"] == .string("16:9"))
+        #expect(body["resolution"] == .string("2k"))
+    }
+
+    @Test func extraBodyOverridesStandardParams() throws {
+        let model = OpenAIImageGenerationModel(apiKey: "test-key")
+        var options = ImageGenerationOptions(size: .square)
+        options[custom: OpenAIImageGenerationModel.self] = .init(
+            extraBody: [
+                "size": .string("auto")
+            ]
+        )
+
+        let body = try model.createRequestBody(prompt: "test", options: options)
+
+        // extraBody should override the standard size mapping
+        #expect(body["size"] == .string("auto"))
     }
 
     @Test func qualityRawValues() {

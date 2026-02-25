@@ -40,6 +40,23 @@ public struct OpenAIImageGenerationModel: ImageGenerationModel {
         /// The style of the generated image (DALL-E 3 only).
         public var style: Style?
 
+        /// Additional parameters to include in the request body.
+        ///
+        /// These parameters are merged into the top-level request JSON,
+        /// allowing you to pass vendor-specific options for OpenAI-compatible
+        /// image generation APIs (for example, `aspect_ratio` and `resolution`
+        /// for xAI's Grok).
+        ///
+        /// ```swift
+        /// options[custom: OpenAIImageGenerationModel.self] = .init(
+        ///     extraBody: [
+        ///         "aspect_ratio": .string("16:9"),
+        ///         "resolution": .string("2k")
+        ///     ]
+        /// )
+        /// ```
+        public var extraBody: [String: JSONValue]?
+
         /// Image quality levels.
         public enum Quality: String, Sendable, Equatable {
             case low
@@ -73,16 +90,19 @@ public struct OpenAIImageGenerationModel: ImageGenerationModel {
         ///   - background: The background style.
         ///   - outputFormat: The output image format.
         ///   - style: The image style (DALL-E 3 only).
+        ///   - extraBody: Additional parameters for the request body.
         public init(
             quality: Quality? = nil,
             background: Background? = nil,
             outputFormat: OutputFormat? = nil,
-            style: Style? = nil
+            style: Style? = nil,
+            extraBody: [String: JSONValue]? = nil
         ) {
             self.quality = quality
             self.background = background
             self.outputFormat = outputFormat
             self.style = style
+            self.extraBody = extraBody
         }
     }
 
@@ -192,6 +212,13 @@ extension OpenAIImageGenerationModel {
             }
             if let style = customOptions.style {
                 body["style"] = .string(style.rawValue)
+            }
+
+            // Merge extraBody last to allow overrides
+            if let extraBody = customOptions.extraBody {
+                for (key, value) in extraBody {
+                    body[key] = value
+                }
             }
         }
 
