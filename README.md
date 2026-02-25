@@ -495,6 +495,7 @@ Image generation support varies by provider:
 | ---------------------- | :--------------: | :-----------: |
 | OpenAI (gpt-image-1)  | yes              | yes           |
 | OpenAI (dall-e-3)      | yes              | —             |
+| Open Responses         | yes              | yes           |
 | Gemini Imagen          | yes              | —             |
 | Gemini Native          | yes              | yes           |
 | Anthropic              | —                | —             |
@@ -903,6 +904,60 @@ options[custom: OpenResponsesLanguageModel.self] = .init(
     extraBody: ["custom_param": .string("value")]
 )
 ```
+
+#### Image Generation
+
+The Responses API supports image generation as a built-in server tool.
+Unlike the standalone Images API (used by `OpenAIImageGenerationModel`),
+images are generated as part of a conversation — enabling multi-turn editing
+and images alongside text responses:
+
+```swift
+let model = OpenResponsesLanguageModel(
+    baseURL: URL(string: "https://api.openai.com/v1/")!,
+    apiKey: ProcessInfo.processInfo.environment["OPENAI_API_KEY"]!,
+    model: "gpt-4.1"
+)
+let session = LanguageModelSession(model: model)
+
+var options = GenerationOptions()
+options[custom: OpenResponsesLanguageModel.self] = .init(
+    imageGeneration: .init(quality: .high, size: .square)
+)
+
+let response = try await session.respond(
+    to: "Generate an image of a cat wearing a top hat",
+    options: options
+)
+
+// Access generated images from the response
+for image in response.generatedImages {
+    switch image.source {
+    case .data(let data, let mimeType):
+        print("Got \(mimeType) image: \(data.count) bytes")
+    case .url(let url):
+        print("Image URL: \(url)")
+    }
+}
+```
+
+Configure image generation parameters through the tool options:
+
+```swift
+options[custom: OpenResponsesLanguageModel.self] = .init(
+    imageGeneration: .init(
+        quality: .high,            // .low, .medium, .high, .auto
+        size: .landscape,          // .square, .landscape, .portrait, .auto
+        background: .transparent,  // .opaque, .transparent, .auto
+        outputFormat: .png,        // .png, .jpeg, .webp
+        outputCompression: 80      // 0–100 (for lossy formats)
+    )
+)
+```
+
+Since image generation is a server tool, it works alongside regular text responses
+and function tools in the same request.
+The model decides when to generate images based on the conversation.
 
 ### Anthropic
 
