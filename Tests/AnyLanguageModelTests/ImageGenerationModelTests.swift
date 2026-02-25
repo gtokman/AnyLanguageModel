@@ -12,12 +12,35 @@ struct ImageGenerationOptionsTests {
         let options = ImageGenerationOptions()
         #expect(options.numberOfImages == nil)
         #expect(options.size == nil)
+        #expect(options.inputImages.isEmpty)
     }
 
     @Test func initializationWithValues() {
         let options = ImageGenerationOptions(numberOfImages: 3, size: .square)
         #expect(options.numberOfImages == 3)
         #expect(options.size == .square)
+        #expect(options.inputImages.isEmpty)
+    }
+
+    @Test func initializationWithInputImages() {
+        let image = Transcript.ImageSegment(data: Data([0x89, 0x50]), mimeType: "image/png")
+        let options = ImageGenerationOptions(inputImages: [image])
+        #expect(options.inputImages.count == 1)
+    }
+
+    @Test func equalityWithInputImages() {
+        let image = Transcript.ImageSegment(id: "test-id", data: Data([0x89, 0x50]), mimeType: "image/png")
+        let options1 = ImageGenerationOptions(inputImages: [image])
+        let options2 = ImageGenerationOptions(inputImages: [image])
+        #expect(options1 == options2)
+    }
+
+    @Test func inequalityWithDifferentInputImages() {
+        let image1 = Transcript.ImageSegment(id: "id-1", data: Data([0x01]), mimeType: "image/png")
+        let image2 = Transcript.ImageSegment(id: "id-2", data: Data([0x02]), mimeType: "image/png")
+        let options1 = ImageGenerationOptions(inputImages: [image1])
+        let options2 = ImageGenerationOptions(inputImages: [image2])
+        #expect(options1 != options2)
     }
 
     @Test func equalityWithSameValues() {
@@ -198,9 +221,18 @@ struct OpenAIImageGenerationModelTests {
 
         #expect(body["model"] == .string("gpt-image-1"))
         #expect(body["prompt"] == .string("A cat"))
-        #expect(body["response_format"] == .string("b64_json"))
+        #expect(body["response_format"] == nil)  // gpt-image-1 doesn't support response_format
         #expect(body["n"] == nil)
         #expect(body["size"] == nil)
+    }
+
+    @Test func requestBodyIncludesResponseFormatForDallE() throws {
+        let model = OpenAIImageGenerationModel(apiKey: "test-key", model: "dall-e-3")
+        let options = ImageGenerationOptions()
+
+        let body = try model.createRequestBody(prompt: "A cat", options: options)
+
+        #expect(body["response_format"] == .string("b64_json"))
     }
 
     @Test func requestBodyWithOptions() throws {
@@ -338,6 +370,88 @@ struct OpenAIImageGenerationModelTests {
     @Test func styleRawValues() {
         #expect(OpenAIImageGenerationModel.CustomImageGenerationOptions.Style.natural.rawValue == "natural")
         #expect(OpenAIImageGenerationModel.CustomImageGenerationOptions.Style.vivid.rawValue == "vivid")
+    }
+
+    @Test func requestBodyWithInputImages() throws {
+        let model = OpenAIImageGenerationModel(apiKey: "test-key")
+        let imageData = Data([0x89, 0x50, 0x4E, 0x47])
+        let image = Transcript.ImageSegment(data: imageData, mimeType: "image/png")
+        let options = ImageGenerationOptions(inputImages: [image])
+
+        let body = try model.createRequestBody(prompt: "Remove background", options: options)
+
+        if case .array(let images) = body["image"],
+            case .object(let imageObj) = images.first
+        {
+            #expect(imageObj["type"] == .string("base64"))
+            #expect(imageObj["media_type"] == .string("image/png"))
+            #expect(imageObj["data"] == .string(imageData.base64EncodedString()))
+        } else {
+            Issue.record("Expected image array with base64 object")
+        }
+    }
+
+    @Test func requestBodyWithURLInputImage() throws {
+        let model = OpenAIImageGenerationModel(apiKey: "test-key")
+        let image = Transcript.ImageSegment(url: URL(string: "https://example.com/image.png")!)
+        let options = ImageGenerationOptions(inputImages: [image])
+
+        let body = try model.createRequestBody(prompt: "Edit this", options: options)
+
+        if case .array(let images) = body["image"],
+            case .object(let imageObj) = images.first
+        {
+            #expect(imageObj["type"] == .string("url"))
+            #expect(imageObj["url"] == .string("https://example.com/image.png"))
+        } else {
+            Issue.record("Expected image array with url object")
+        }
+    }
+
+    @Test func requestBodyWithMask() throws {
+        let model = OpenAIImageGenerationModel(apiKey: "test-key")
+        let imageData = Data([0x89, 0x50])
+        let maskData = Data([0xFF, 0x00])
+        let image = Transcript.ImageSegment(data: imageData, mimeType: "image/png")
+        var options = ImageGenerationOptions(inputImages: [image])
+        options[custom: OpenAIImageGenerationModel.self] = .init(
+            mask: Transcript.ImageSegment(data: maskData, mimeType: "image/png")
+        )
+
+        let body = try model.createRequestBody(prompt: "Inpaint here", options: options)
+
+        if case .object(let maskObj) = body["mask"] {
+            #expect(maskObj["type"] == .string("base64"))
+            #expect(maskObj["media_type"] == .string("image/png"))
+            #expect(maskObj["data"] == .string(maskData.base64EncodedString()))
+        } else {
+            Issue.record("Expected mask object")
+        }
+    }
+
+    @Test func requestBodyWithInputFidelity() throws {
+        let model = OpenAIImageGenerationModel(apiKey: "test-key")
+        let image = Transcript.ImageSegment(data: Data([0x01]), mimeType: "image/png")
+        var options = ImageGenerationOptions(inputImages: [image])
+        options[custom: OpenAIImageGenerationModel.self] = .init(inputFidelity: .high)
+
+        let body = try model.createRequestBody(prompt: "Enhance", options: options)
+
+        #expect(body["input_fidelity"] == .string("high"))
+    }
+
+    @Test func inputFidelityRawValues() {
+        #expect(OpenAIImageGenerationModel.CustomImageGenerationOptions.InputFidelity.high.rawValue == "high")
+        #expect(OpenAIImageGenerationModel.CustomImageGenerationOptions.InputFidelity.low.rawValue == "low")
+    }
+
+    @Test func noImageArrayWhenNoInputImages() throws {
+        let model = OpenAIImageGenerationModel(apiKey: "test-key")
+        let options = ImageGenerationOptions()
+
+        let body = try model.createRequestBody(prompt: "Generate", options: options)
+
+        #expect(body["image"] == nil)
     }
 }
 
@@ -552,6 +666,78 @@ struct GeminiNativeImageGenerationModelTests {
         let options1 = GeminiNativeImageGenerationModel.CustomImageGenerationOptions()
         let options2 = GeminiNativeImageGenerationModel.CustomImageGenerationOptions()
         #expect(options1 == options2)
+    }
+
+    @Test func requestBodyWithInputImages() {
+        let model = GeminiNativeImageGenerationModel(apiKey: "test-key")
+        let imageData = Data([0x89, 0x50, 0x4E, 0x47])
+        let image = Transcript.ImageSegment(data: imageData, mimeType: "image/png")
+        let options = ImageGenerationOptions(inputImages: [image])
+
+        let body = model.createRequestBody(prompt: "Edit this image", options: options)
+
+        if case .array(let contents) = body["contents"],
+            case .object(let content) = contents.first,
+            case .array(let parts) = content["parts"]
+        {
+            // Should have inlineData part followed by text part
+            #expect(parts.count == 2)
+
+            if case .object(let imagePart) = parts[0],
+                case .object(let inlineData) = imagePart["inlineData"]
+            {
+                #expect(inlineData["mimeType"] == .string("image/png"))
+                #expect(inlineData["data"] == .string(imageData.base64EncodedString()))
+            } else {
+                Issue.record("Expected inlineData part")
+            }
+
+            if case .object(let textPart) = parts[1] {
+                #expect(textPart["text"] == .string("Edit this image"))
+            } else {
+                Issue.record("Expected text part")
+            }
+        } else {
+            Issue.record("Expected contents with parts")
+        }
+    }
+
+    @Test func requestBodyWithMultipleInputImages() {
+        let model = GeminiNativeImageGenerationModel(apiKey: "test-key")
+        let image1 = Transcript.ImageSegment(data: Data([0x01]), mimeType: "image/png")
+        let image2 = Transcript.ImageSegment(data: Data([0x02]), mimeType: "image/jpeg")
+        let options = ImageGenerationOptions(inputImages: [image1, image2])
+
+        let body = model.createRequestBody(prompt: "Combine these", options: options)
+
+        if case .array(let contents) = body["contents"],
+            case .object(let content) = contents.first,
+            case .array(let parts) = content["parts"]
+        {
+            // Two inlineData parts + one text part
+            #expect(parts.count == 3)
+        } else {
+            Issue.record("Expected contents with 3 parts")
+        }
+    }
+
+    @Test func requestBodyWithNoInputImagesHasOnlyTextPart() {
+        let model = GeminiNativeImageGenerationModel(apiKey: "test-key")
+        let options = ImageGenerationOptions()
+
+        let body = model.createRequestBody(prompt: "Generate something", options: options)
+
+        if case .array(let contents) = body["contents"],
+            case .object(let content) = contents.first,
+            case .array(let parts) = content["parts"]
+        {
+            #expect(parts.count == 1)
+            if case .object(let textPart) = parts[0] {
+                #expect(textPart["text"] == .string("Generate something"))
+            }
+        } else {
+            Issue.record("Expected contents with single text part")
+        }
     }
 }
 

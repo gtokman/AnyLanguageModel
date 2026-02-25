@@ -137,11 +137,29 @@ extension GeminiNativeImageGenerationModel {
         prompt: String,
         options: ImageGenerationOptions
     ) -> [String: JSONValue] {
+        var parts: [JSONValue] = []
+
+        // Add input images as inlineData parts before the text prompt
+        for image in options.inputImages {
+            switch image.source {
+            case .data(let data, let mimeType):
+                parts.append(.object([
+                    "inlineData": .object([
+                        "mimeType": .string(mimeType),
+                        "data": .string(data.base64EncodedString()),
+                    ])
+                ]))
+            case .url:
+                // URL-based images are not supported by Gemini's inlineData format
+                break
+            }
+        }
+
+        parts.append(.object(["text": .string(prompt)]))
+
         let contents: JSONValue = .object([
             "role": .string("user"),
-            "parts": .array([
-                .object(["text": .string(prompt)])
-            ]),
+            "parts": .array(parts),
         ])
 
         var generationConfig: [String: JSONValue] = [

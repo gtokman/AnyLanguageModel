@@ -491,15 +491,47 @@ if let revised = result.revisedPrompt {
 
 Image generation support varies by provider:
 
-| Provider               | Image Generation |
-| ---------------------- | :--------------: |
-| OpenAI (gpt-image-1)  | yes              |
-| OpenAI (dall-e-3)      | yes              |
-| Gemini Imagen          | yes              |
-| Gemini Native          | yes              |
-| Anthropic              | —                |
-| Ollama                 | —                |
-| Apple Foundation Models| —                |
+| Provider               | Image Generation | Image Editing |
+| ---------------------- | :--------------: | :-----------: |
+| OpenAI (gpt-image-1)  | yes              | yes           |
+| OpenAI (dall-e-3)      | yes              | —             |
+| Gemini Imagen          | yes              | —             |
+| Gemini Native          | yes              | yes           |
+| Anthropic              | —                | —             |
+| Ollama                 | —                | —             |
+| Apple Foundation Models| —                | —             |
+
+#### Image Editing
+
+Edit existing images by providing `inputImages` alongside a text prompt:
+
+```swift
+// OpenAI image editing
+let model = OpenAIImageGenerationModel(
+    apiKey: ProcessInfo.processInfo.environment["OPENAI_API_KEY"]!,
+    model: "gpt-image-1"
+)
+
+let sourceImage = Transcript.ImageSegment(data: imageData, mimeType: "image/png")
+let result = try await model.generateImages(
+    for: "Remove the background and make it transparent",
+    options: ImageGenerationOptions(inputImages: [sourceImage])
+)
+```
+
+```swift
+// Gemini Native image editing
+let model = GeminiNativeImageGenerationModel(
+    apiKey: ProcessInfo.processInfo.environment["GEMINI_API_KEY"]!,
+    model: "gemini-2.0-flash-preview-image-generation"
+)
+
+let sourceImage = Transcript.ImageSegment(data: imageData, mimeType: "image/png")
+let result = try await model.generateImages(
+    for: "Change the art style to watercolor",
+    options: ImageGenerationOptions(inputImages: [sourceImage])
+)
+```
 
 ## Providers
 
@@ -798,6 +830,41 @@ let result = try await grokModel.generateImages(
 )
 ```
 
+#### Image Editing
+
+Edit images using OpenAI's
+[Images edits API](https://platform.openai.com/docs/api-reference/images/createEdit)
+by providing `inputImages`:
+
+```swift
+let sourceImage = Transcript.ImageSegment(data: imageData, mimeType: "image/png")
+
+var options = ImageGenerationOptions(inputImages: [sourceImage])
+options[custom: OpenAIImageGenerationModel.self] = .init(
+    quality: .high
+)
+
+let result = try await imageModel.generateImages(
+    for: "Remove the background",
+    options: options
+)
+```
+
+For inpainting, provide a `mask` where transparent areas indicate where to edit:
+
+```swift
+var options = ImageGenerationOptions(inputImages: [sourceImage])
+options[custom: OpenAIImageGenerationModel.self] = .init(
+    mask: Transcript.ImageSegment(data: maskData, mimeType: "image/png"),
+    inputFidelity: .high  // .high, .low
+)
+
+let result = try await imageModel.generateImages(
+    for: "Replace the sky with a sunset",
+    options: options
+)
+```
+
 ### Open Responses
 
 Connects to any API that conforms to the 
@@ -1014,6 +1081,17 @@ let result = try await nativeModel.generateImages(
 if let text = result.revisedPrompt {
     print("Model said: \(text)")
 }
+```
+
+Native Gemini also supports image editing by passing `inputImages`:
+
+```swift
+let sourceImage = Transcript.ImageSegment(data: imageData, mimeType: "image/png")
+
+let result = try await nativeModel.generateImages(
+    for: "Change the art style to watercolor",
+    options: ImageGenerationOptions(inputImages: [sourceImage])
+)
 ```
 
 ## Testing

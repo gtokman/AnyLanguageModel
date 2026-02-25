@@ -40,6 +40,16 @@ public struct OpenAIImageGenerationModel: ImageGenerationModel {
         /// The style of the generated image (DALL-E 3 only).
         public var style: Style?
 
+        /// A mask image for inpainting (transparent areas indicate where to edit).
+        ///
+        /// Only used when `inputImages` is non-empty on the parent options.
+        public var mask: Transcript.ImageSegment?
+
+        /// The fidelity level for input images.
+        ///
+        /// Only used when `inputImages` is non-empty on the parent options.
+        public var inputFidelity: InputFidelity?
+
         /// Additional parameters to include in the request body.
         ///
         /// These parameters are merged into the top-level request JSON,
@@ -83,6 +93,12 @@ public struct OpenAIImageGenerationModel: ImageGenerationModel {
             case vivid
         }
 
+        /// Input image fidelity levels.
+        public enum InputFidelity: String, Sendable, Equatable {
+            case high
+            case low
+        }
+
         /// Creates custom image generation options for OpenAI.
         ///
         /// - Parameters:
@@ -90,18 +106,24 @@ public struct OpenAIImageGenerationModel: ImageGenerationModel {
         ///   - background: The background style.
         ///   - outputFormat: The output image format.
         ///   - style: The image style (DALL-E 3 only).
+        ///   - mask: A mask image for inpainting.
+        ///   - inputFidelity: The fidelity level for input images.
         ///   - extraBody: Additional parameters for the request body.
         public init(
             quality: Quality? = nil,
             background: Background? = nil,
             outputFormat: OutputFormat? = nil,
             style: Style? = nil,
+            mask: Transcript.ImageSegment? = nil,
+            inputFidelity: InputFidelity? = nil,
             extraBody: [String: JSONValue]? = nil
         ) {
             self.quality = quality
             self.background = background
             self.outputFormat = outputFormat
             self.style = style
+            self.mask = mask
+            self.inputFidelity = inputFidelity
             self.extraBody = extraBody
         }
     }
@@ -145,7 +167,9 @@ public struct OpenAIImageGenerationModel: ImageGenerationModel {
         for prompt: String,
         options: ImageGenerationOptions
     ) async throws -> GeneratedImage {
-        let url = baseURL.appendingPathComponent("images/generations")
+        let isEdit = !options.inputImages.isEmpty
+        let endpoint = isEdit ? "images/edits" : "images/generations"
+        let url = baseURL.appendingPathComponent(endpoint)
         let body = try createRequestBody(prompt: prompt, options: options)
         let bodyData = try JSONEncoder().encode(body)
 
@@ -189,8 +213,13 @@ extension OpenAIImageGenerationModel {
         var body: [String: JSONValue] = [
             "model": .string(model),
             "prompt": .string(prompt),
-            "response_format": .string("b64_json"),
         ]
+
+        // gpt-image-1 doesn't support response_format (always returns b64);
+        // DALL-E models need it explicitly to get base64 instead of URLs.
+        if !model.hasPrefix("gpt-image") {
+            body["response_format"] = .string("b64_json")
+        }
 
         if let n = options.numberOfImages {
             body["n"] = .int(n)
@@ -198,6 +227,11 @@ extension OpenAIImageGenerationModel {
 
         if let size = options.size {
             body["size"] = .string(openAISizeString(size))
+        }
+
+        // Add input images for editing
+        if !options.inputImages.isEmpty {
+            body["image"] = .array(options.inputImages.map { imageSegmentToJSON($0) })
         }
 
         if let customOptions = options[custom: OpenAIImageGenerationModel.self] {
@@ -214,6 +248,16 @@ extension OpenAIImageGenerationModel {
                 body["style"] = .string(style.rawValue)
             }
 
+            // Add mask for inpainting
+            if let mask = customOptions.mask {
+                body["mask"] = imageSegmentToJSON(mask)
+            }
+
+            // Add input fidelity
+            if let inputFidelity = customOptions.inputFidelity {
+                body["input_fidelity"] = .string(inputFidelity.rawValue)
+            }
+
             // Merge extraBody last to allow overrides
             if let extraBody = customOptions.extraBody {
                 for (key, value) in extraBody {
@@ -223,6 +267,22 @@ extension OpenAIImageGenerationModel {
         }
 
         return body
+    }
+
+    private func imageSegmentToJSON(_ segment: Transcript.ImageSegment) -> JSONValue {
+        switch segment.source {
+        case .data(let data, let mimeType):
+            return .object([
+                "type": .string("base64"),
+                "media_type": .string(mimeType),
+                "data": .string(data.base64EncodedString()),
+            ])
+        case .url(let url):
+            return .object([
+                "type": .string("url"),
+                "url": .string(url.absoluteString),
+            ])
+        }
     }
 
     private func openAISizeString(_ size: ImageGenerationOptions.ImageSize) -> String {

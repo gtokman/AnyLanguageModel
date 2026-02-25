@@ -43,6 +43,13 @@ public struct ImageGenerationOptions: Sendable, Equatable {
     /// The desired size of the generated images.
     public var size: ImageSize?
 
+    /// Input images to use for image editing.
+    ///
+    /// When non-empty, providers that support image editing will use these
+    /// images as the source for editing operations. The text prompt describes
+    /// what edits to apply.
+    public var inputImages: [Transcript.ImageSegment]
+
     /// Storage for model-specific custom options.
     private var customOptionsStorage: CustomImageOptionsStorage = .init()
 
@@ -76,12 +83,15 @@ public struct ImageGenerationOptions: Sendable, Equatable {
     /// - Parameters:
     ///   - numberOfImages: The number of images to generate.
     ///   - size: The desired size of the generated images.
+    ///   - inputImages: Input images to use for image editing.
     public init(
         numberOfImages: Int? = nil,
-        size: ImageSize? = nil
+        size: ImageSize? = nil,
+        inputImages: [Transcript.ImageSegment] = []
     ) {
         self.numberOfImages = numberOfImages
         self.size = size
+        self.inputImages = inputImages
     }
 }
 
