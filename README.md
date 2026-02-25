@@ -434,6 +434,73 @@ actor ToolExecutionObserver: ToolExecutionDelegate {
 session.toolExecutionDelegate = ToolExecutionObserver()
 ```
 
+### Image Generation
+
+Generate images from text prompts using the `ImageGenerationModel` protocol.
+OpenAI and Google Gemini both offer image generation models:
+
+```swift
+let model = OpenAIImageGenerationModel(
+    apiKey: ProcessInfo.processInfo.environment["OPENAI_API_KEY"]!,
+    model: "gpt-image-1"
+)
+
+let result = try await model.generateImages(
+    for: "A watercolor painting of a mountain lake at sunset",
+    options: ImageGenerationOptions(size: .landscape)
+)
+
+// Access the generated images
+for image in result.images {
+    switch image.source {
+    case .data(let data, let mimeType):
+        // Use the image data
+        print("Generated \(mimeType) image: \(data.count) bytes")
+    case .url(let url):
+        print("Image URL: \(url)")
+    }
+}
+```
+
+Control generation with `ImageGenerationOptions`:
+
+```swift
+var options = ImageGenerationOptions(
+    numberOfImages: 2,
+    size: .square  // .square, .landscape, .portrait, or .custom(width:height:)
+)
+
+// Set provider-specific options
+options[custom: OpenAIImageGenerationModel.self] = .init(
+    quality: .high,
+    background: .transparent,
+    outputFormat: .png,
+    style: .vivid
+)
+
+let result = try await model.generateImages(for: "A company logo", options: options)
+```
+
+Some models return a revised prompt describing how they interpreted your input:
+
+```swift
+if let revised = result.revisedPrompt {
+    print("Model interpreted prompt as: \(revised)")
+}
+```
+
+Image generation support varies by provider:
+
+| Provider               | Image Generation |
+| ---------------------- | :--------------: |
+| OpenAI (gpt-image-1)  | yes              |
+| OpenAI (dall-e-3)      | yes              |
+| Gemini Imagen          | yes              |
+| Gemini Native          | yes              |
+| Anthropic              | —                |
+| Ollama                 | —                |
+| Apple Foundation Models| —                |
+
 ## Providers
 
 ### Apple Foundation Models
@@ -669,6 +736,42 @@ options[custom: OpenAILanguageModel.self] = .init(
 )
 ```
 
+#### Image Generation
+
+Generate images using OpenAI's
+[Images API](https://platform.openai.com/docs/api-reference/images)
+with DALL-E or GPT Image models:
+
+```swift
+let imageModel = OpenAIImageGenerationModel(
+    apiKey: ProcessInfo.processInfo.environment["OPENAI_API_KEY"]!,
+    model: "gpt-image-1"  // or "dall-e-3"
+)
+
+let result = try await imageModel.generateImages(
+    for: "A cute robot waving hello",
+    options: ImageGenerationOptions(numberOfImages: 1, size: .square)
+)
+```
+
+OpenAI-specific options include quality, background transparency,
+output format, and style:
+
+```swift
+var options = ImageGenerationOptions(size: .landscape)
+options[custom: OpenAIImageGenerationModel.self] = .init(
+    quality: .high,            // .low, .medium, .high
+    background: .transparent,  // .opaque, .transparent
+    outputFormat: .png,        // .png, .jpeg, .webp
+    style: .vivid              // .natural, .vivid (DALL-E 3 only)
+)
+
+let result = try await imageModel.generateImages(
+    for: "A minimalist logo for a coffee shop",
+    options: options
+)
+```
+
 ### Open Responses
 
 Connects to any API that conforms to the 
@@ -829,6 +932,63 @@ let response = try await session.respond(
 
 > [!TIP]
 > Gemini server tools are not available as client tools (`Tool`) for other models.
+
+#### Image Generation
+
+Gemini supports image generation through two approaches:
+
+**Imagen API** — Uses Google's dedicated image generation models
+via the predict endpoint:
+
+```swift
+let imagenModel = GeminiImagenModel(
+    apiKey: ProcessInfo.processInfo.environment["GEMINI_API_KEY"]!,
+    model: "imagen-3.0-generate-002"
+)
+
+let result = try await imagenModel.generateImages(
+    for: "A photorealistic landscape of rolling hills at golden hour",
+    options: ImageGenerationOptions(numberOfImages: 2, size: .landscape)
+)
+```
+
+Imagen-specific options include output format, safety filters,
+person generation controls, and negative prompts:
+
+```swift
+var options = ImageGenerationOptions(size: .square)
+options[custom: GeminiImagenModel.self] = .init(
+    outputMimeType: .jpeg,                    // .jpeg, .png
+    safetyFilterLevel: .blockMediumAndAbove,   // Safety filter threshold
+    personGeneration: .allowAdult,             // .dontAllow, .allowAdult, .allowAll
+    negativePrompt: "blurry, low quality"      // What to exclude
+)
+
+let result = try await imagenModel.generateImages(
+    for: "A professional headshot portrait",
+    options: options
+)
+```
+
+**Native Gemini** — Uses the `generateContent` API with image output modalities,
+allowing Gemini models to generate images alongside text:
+
+```swift
+let nativeModel = GeminiNativeImageGenerationModel(
+    apiKey: ProcessInfo.processInfo.environment["GEMINI_API_KEY"]!,
+    model: "gemini-2.0-flash-preview-image-generation"
+)
+
+let result = try await nativeModel.generateImages(
+    for: "Draw a cartoon cat wearing a top hat",
+    options: ImageGenerationOptions()
+)
+
+// Native models may return text alongside the image
+if let text = result.revisedPrompt {
+    print("Model said: \(text)")
+}
+```
 
 ## Testing
 
