@@ -1158,6 +1158,47 @@ let result = try await nativeModel.generateImages(
 You can also use the standard `ImageGenerationOptions.size` property, which maps to
 aspect ratio automatically (`.square` → 1:1, `.landscape` → 16:9, `.portrait` → 9:16).
 
+**Inline Image Generation in Conversations** — Image-capable Gemini models can also
+generate images directly within a `LanguageModelSession` conversation, enabling
+multi-turn image editing and mixed text-and-image responses:
+
+```swift
+let model = GeminiLanguageModel(
+    apiKey: ProcessInfo.processInfo.environment["GEMINI_API_KEY"]!,
+    model: "gemini-2.5-flash-image"
+)
+let session = LanguageModelSession(model: model)
+
+var options = GenerationOptions()
+options[custom: GeminiLanguageModel.self] = .init(
+    imageGeneration: .init(aspectRatio: .widescreen, outputMimeType: .png)
+)
+
+let response = try await session.respond(
+    to: "Draw a cartoon cat wearing a top hat",
+    options: options
+)
+
+for image in response.generatedImages {
+    switch image.source {
+    case .data(let data, let mimeType):
+        print("Got \(mimeType) image: \(data.count) bytes")
+    case .url(let url):
+        print("Image URL: \(url)")
+    }
+}
+
+// Multi-turn editing works automatically —
+// thought signatures are preserved across turns
+let edited = try await session.respond(
+    to: "Now change the hat to a beret",
+    options: options
+)
+```
+
+> [!NOTE]
+> Streaming (`streamResponse`) does not currently surface generated images.
+
 Native Gemini also supports image editing by passing `inputImages`:
 
 ```swift

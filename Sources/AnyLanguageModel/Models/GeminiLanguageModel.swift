@@ -119,20 +119,84 @@ public struct GeminiLanguageModel: LanguageModel {
         ///   this setting.
         public var jsonMode: JSONMode?
 
+        /// Configures inline image generation for Gemini models that support it
+        /// (e.g. `gemini-2.5-flash-image`, `gemini-3-pro-image-preview`).
+        ///
+        /// When set, the model can generate images alongside text in responses.
+        public struct ImageGeneration: Sendable, Hashable {
+            /// The aspect ratio of the generated image.
+            public var aspectRatio: AspectRatio?
+
+            /// The resolution of the generated image.
+            public var imageSize: ImageResolution?
+
+            /// The MIME type of the output image.
+            public var outputMimeType: OutputMimeType?
+
+            /// Supported aspect ratios for inline image generation.
+            public enum AspectRatio: String, Sendable, Hashable {
+                /// Square (1:1).
+                case square = "1:1"
+                /// Standard landscape (4:3).
+                case standard = "4:3"
+                /// Standard portrait (3:4).
+                case standardPortrait = "3:4"
+                /// Widescreen landscape (16:9).
+                case widescreen = "16:9"
+                /// Widescreen portrait (9:16).
+                case widescreenPortrait = "9:16"
+            }
+
+            /// Supported image resolutions for inline image generation.
+            public enum ImageResolution: String, Sendable, Hashable {
+                /// 1K resolution (1024px).
+                case standard = "1024"
+                /// 2K resolution (2048px).
+                case hd = "2048"
+                /// 4K resolution (4096px). Only available with `gemini-3-pro-image-preview`.
+                case ultraHD = "4096"
+            }
+
+            /// Supported output MIME types for inline image generation.
+            public enum OutputMimeType: String, Sendable, Hashable {
+                case png = "image/png"
+                case jpeg = "image/jpeg"
+            }
+
+            public init(
+                aspectRatio: AspectRatio? = nil,
+                imageSize: ImageResolution? = nil,
+                outputMimeType: OutputMimeType? = nil
+            ) {
+                self.aspectRatio = aspectRatio
+                self.imageSize = imageSize
+                self.outputMimeType = outputMimeType
+            }
+        }
+
+        /// Inline image generation configuration.
+        ///
+        /// When set, the model will include `responseModalities: ["TEXT", "IMAGE"]`
+        /// in the request and may generate images alongside text in responses.
+        public var imageGeneration: ImageGeneration?
+
         /// Creates custom generation options for Gemini models.
         ///
         /// - Parameters:
         ///   - thinking: The thinking mode configuration. When `nil`, uses the model's default.
         ///   - serverTools: Server-side tools to enable. When `nil`, uses the model's default.
         ///   - jsonMode: The JSON mode configuration. When `nil`, uses the model's default.
+        ///   - imageGeneration: Inline image generation configuration. When `nil`, image generation is not enabled.
         public init(
             thinking: Thinking? = nil,
             serverTools: [ServerTool]? = nil,
-            jsonMode: JSONMode? = nil
+            jsonMode: JSONMode? = nil,
+            imageGeneration: ImageGeneration? = nil
         ) {
             self.thinking = thinking
             self.serverTools = serverTools
             self.jsonMode = jsonMode
+            self.imageGeneration = imageGeneration
         }
     }
 
@@ -271,6 +335,7 @@ public struct GeminiLanguageModel: LanguageModel {
         let effectiveThinking = customOptions?.thinking ?? _thinking
         let effectiveServerTools = customOptions?.serverTools ?? _serverTools
         let effectiveJsonMode = customOptions?.jsonMode
+        let effectiveImageGeneration = customOptions?.imageGeneration
 
         let url =
             baseURL
@@ -290,7 +355,8 @@ public struct GeminiLanguageModel: LanguageModel {
                 generating: type,
                 options: options,
                 thinking: effectiveThinking,
-                jsonMode: effectiveJsonMode
+                jsonMode: effectiveJsonMode,
+                imageGeneration: effectiveImageGeneration
             )
 
             let body = try JSONEncoder().encode(params)
@@ -306,19 +372,24 @@ public struct GeminiLanguageModel: LanguageModel {
                 throw GeminiError.noCandidate
             }
 
+            let responseParts = firstCandidate.content.parts ?? []
+
             let functionCalls: [GeminiFunctionCall] =
-                firstCandidate.content.parts?.compactMap { part in
-                    if case .functionCall(let call) = part { return call }
+                responseParts.compactMap { signedPart in
+                    if case .functionCall(let call) = signedPart.part { return call }
                     return nil
-                } ?? []
+                }
 
             if !functionCalls.isEmpty {
+                // Encode signed parts as provider data for thought signature round-tripping
+                let providerData = try? JSONEncoder().encode(responseParts)
+
                 // Resolve function calls
                 let resolution = try await resolveFunctionCalls(functionCalls, session: session)
                 switch resolution {
                 case .stop(let calls):
                     if !calls.isEmpty {
-                        transcript.append(.toolCalls(Transcript.ToolCalls(calls)))
+                        transcript.append(.toolCalls(Transcript.ToolCalls(calls, providerData: providerData)))
                     }
                     let empty = try emptyResponseContent(for: type)
                     return LanguageModelSession.Response(
@@ -328,7 +399,11 @@ public struct GeminiLanguageModel: LanguageModel {
                     )
                 case .invocations(let invocations):
                     if !invocations.isEmpty {
-                        transcript.append(.toolCalls(Transcript.ToolCalls(invocations.map(\.call))))
+                        transcript.append(
+                            .toolCalls(
+                                Transcript.ToolCalls(invocations.map(\.call), providerData: providerData)
+                            )
+                        )
 
                         for invocation in invocations {
                             transcript.append(.toolOutput(invocation.output))
@@ -339,14 +414,39 @@ public struct GeminiLanguageModel: LanguageModel {
                     continue
                 }
             } else {
-                // No function calls, extract final text and return
+                // No function calls — extract text and inline images
                 let text =
-                    firstCandidate.content.parts?.compactMap { part -> String? in
-                        switch part {
+                    responseParts.compactMap { signedPart -> String? in
+                        switch signedPart.part {
                         case .text(let t): return t.text
                         default: return nil
                         }
-                    }.joined() ?? ""
+                    }.joined()
+
+                // Extract generated images from inlineData parts
+                var imageSegments: [Transcript.Segment] = []
+                for signedPart in responseParts {
+                    if case .inlineData(let data) = signedPart.part,
+                       let imageData = Data(base64Encoded: data.data)
+                    {
+                        imageSegments.append(
+                            .image(Transcript.ImageSegment(data: imageData, mimeType: data.mimeType))
+                        )
+                    }
+                }
+
+                // If images were generated, add a response entry with them
+                if !imageSegments.isEmpty {
+                    let providerData = try? JSONEncoder().encode(responseParts)
+                    transcript.append(
+                        .response(
+                            Transcript.Response(
+                                segments: imageSegments,
+                                providerData: providerData
+                            )
+                        )
+                    )
+                }
 
                 if type == String.self {
                     return LanguageModelSession.Response(
@@ -379,6 +479,7 @@ public struct GeminiLanguageModel: LanguageModel {
         let effectiveThinking = customOptions?.thinking ?? _thinking
         let effectiveServerTools = customOptions?.serverTools ?? _serverTools
         let effectiveJsonMode = customOptions?.jsonMode
+        let effectiveImageGeneration = customOptions?.imageGeneration
 
         var streamURL =
             baseURL
@@ -401,7 +502,8 @@ public struct GeminiLanguageModel: LanguageModel {
                         generating: type,
                         options: options,
                         thinking: effectiveThinking,
-                        jsonMode: effectiveJsonMode
+                        jsonMode: effectiveJsonMode,
+                        imageGeneration: effectiveImageGeneration
                     )
 
                     let body = try JSONEncoder().encode(params)
@@ -417,12 +519,17 @@ public struct GeminiLanguageModel: LanguageModel {
 
                     var accumulatedText = ""
 
+                    // Note: Streaming does not currently surface generated images
+                    // progressively. Images typically arrive in the final chunk and
+                    // are accumulated but only appear in the transcript after the
+                    // stream completes (via LanguageModelSession.wrapStream).
+
                     for try await chunk in stream {
                         guard let candidate = chunk.candidates.first else { continue }
 
                         if let parts = candidate.content.parts {
-                            for part in parts {
-                                if case .text(let textPart) = part {
+                            for signedPart in parts {
+                                if case .text(let textPart) = signedPart.part {
                                     accumulatedText += textPart.text
 
                                     var raw: GeneratedContent
@@ -460,6 +567,22 @@ public struct GeminiLanguageModel: LanguageModel {
         }
 
         return LanguageModelSession.ResponseStream(stream: stream)
+    }
+
+    /// Test helper that exposes the generated request parameters for unit tests.
+    internal static func _testCreateGenerateContentParams(
+        options: GenerationOptions
+    ) throws -> [String: JSONValue] {
+        let customOptions = options[custom: GeminiLanguageModel.self]
+        return try createGenerateContentParams(
+            contents: [],
+            tools: nil,
+            generating: String.self,
+            options: options,
+            thinking: customOptions?.thinking ?? .disabled,
+            jsonMode: customOptions?.jsonMode,
+            imageGeneration: customOptions?.imageGeneration
+        )
     }
 
     private func buildHeaders() -> [String: String] {
@@ -518,7 +641,8 @@ private func createGenerateContentParams<Content: Generable>(
     generating type: Content.Type,
     options: GenerationOptions,
     thinking: GeminiLanguageModel.CustomGenerationOptions.Thinking,
-    jsonMode: GeminiLanguageModel.CustomGenerationOptions.JSONMode?
+    jsonMode: GeminiLanguageModel.CustomGenerationOptions.JSONMode?,
+    imageGeneration: GeminiLanguageModel.CustomGenerationOptions.ImageGeneration? = nil
 ) throws -> [String: JSONValue] {
     var params: [String: JSONValue] = [
         "contents": try JSONValue(contents)
@@ -571,6 +695,23 @@ private func createGenerateContentParams<Content: Generable>(
         case .schema(let schema):
             generationConfig["responseMimeType"] = .string("application/json")
             generationConfig["responseSchema"] = try JSONValue(schema)
+        }
+    }
+
+    if let imageGeneration {
+        generationConfig["responseModalities"] = .array([.string("TEXT"), .string("IMAGE")])
+        var imageConfig: [String: JSONValue] = [:]
+        if let aspectRatio = imageGeneration.aspectRatio {
+            imageConfig["aspectRatio"] = .string(aspectRatio.rawValue)
+        }
+        if let imageSize = imageGeneration.imageSize {
+            imageConfig["imageSize"] = .string(imageSize.rawValue)
+        }
+        if let outputMimeType = imageGeneration.outputMimeType {
+            imageConfig["outputMimeType"] = .string(outputMimeType.rawValue)
+        }
+        if !imageConfig.isEmpty {
+            generationConfig["imageConfig"] = .object(imageConfig)
         }
     }
 
@@ -776,24 +917,40 @@ extension Transcript {
                     )
                 )
             case .response(let response):
-                messages.append(
-                    .init(
-                        role: .model,
-                        parts: convertSegmentsToGeminiParts(response.segments)
+                // If provider data is present, use it directly (preserves thought signatures)
+                if let providerData = response._providerData,
+                   let signedParts = try? JSONDecoder().decode([GeminiSignedPart].self, from: providerData)
+                {
+                    messages.append(.init(role: .model, parts: signedParts))
+                } else {
+                    messages.append(
+                        .init(
+                            role: .model,
+                            parts: convertSegmentsToGeminiParts(response.segments)
+                        )
                     )
-                )
-            case .toolCalls(let toolCalls):
-                // Add model's response with function calls
-                let functionCallParts: [GeminiPart] = toolCalls.map { call in
-                    let args = try? fromGeneratedContent(call.arguments)
-                    return .functionCall(GeminiFunctionCall(name: call.toolName, args: args))
                 }
-                messages.append(
-                    .init(
-                        role: .model,
-                        parts: functionCallParts
+            case .toolCalls(let toolCalls):
+                // If provider data is present, use it directly (preserves thought signatures)
+                if let providerData = toolCalls._providerData,
+                   let signedParts = try? JSONDecoder().decode([GeminiSignedPart].self, from: providerData)
+                {
+                    messages.append(.init(role: .model, parts: signedParts))
+                } else {
+                    // Fall back to reconstructing from tool call data
+                    let functionCallParts: [GeminiSignedPart] = toolCalls.map { call in
+                        let args = try? fromGeneratedContent(call.arguments)
+                        return GeminiSignedPart(
+                            part: .functionCall(GeminiFunctionCall(name: call.toolName, args: args))
+                        )
+                    }
+                    messages.append(
+                        .init(
+                            role: .model,
+                            parts: functionCallParts
+                        )
                     )
-                )
+                }
             case .toolOutput(let toolOutput):
                 // Add function response as a user message (Gemini API expects function responses from user role)
                 let response = try? toJSONValue(toolOutput)
@@ -804,7 +961,7 @@ extension Transcript {
                 messages.append(
                     .init(
                         role: .user,
-                        parts: [.functionResponse(functionResponse)]
+                        parts: [GeminiSignedPart(part: .functionResponse(functionResponse))]
                     )
                 )
             }
@@ -869,10 +1026,48 @@ private struct GeminiContent: Codable, Sendable {
     }
 
     let role: Role
-    let parts: [GeminiPart]?
+    let parts: [GeminiSignedPart]?
 }
 
-private enum GeminiPart: Codable, Sendable {
+/// Wraps a ``GeminiPart`` together with an optional thought signature.
+///
+/// Gemini 3 models return encrypted `thoughtSignature` tokens on response
+/// parts that must be echoed back verbatim for multi-turn function calling
+/// and image editing to work. The signature lives at the same JSON level as
+/// the part content, so custom `Codable` flattens/unflattens it.
+struct GeminiSignedPart: Codable, Sendable {
+    var part: GeminiPart
+    var thoughtSignature: String?
+
+    init(part: GeminiPart, thoughtSignature: String? = nil) {
+        self.part = part
+        self.thoughtSignature = thoughtSignature
+    }
+
+    private enum SignatureCodingKeys: String, CodingKey {
+        case thoughtSignature
+    }
+
+    init(from decoder: any Decoder) throws {
+        // Decode the part using the same flat container
+        part = try GeminiPart(from: decoder)
+        // Decode thoughtSignature from the same level
+        let container = try decoder.container(keyedBy: SignatureCodingKeys.self)
+        thoughtSignature = try container.decodeIfPresent(String.self, forKey: .thoughtSignature)
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        // Encode the part (writes its own keys)
+        try part.encode(to: encoder)
+        // Encode thoughtSignature at the same level
+        if let sig = thoughtSignature {
+            var container = encoder.container(keyedBy: SignatureCodingKeys.self)
+            try container.encode(sig, forKey: .thoughtSignature)
+        }
+    }
+}
+
+enum GeminiPart: Codable, Sendable {
     case text(GeminiTextPart)
     case functionCall(GeminiFunctionCall)
     case functionResponse(GeminiFunctionResponse)
@@ -930,11 +1125,11 @@ private enum GeminiPart: Codable, Sendable {
     }
 }
 
-private struct GeminiTextPart: Codable, Sendable {
+struct GeminiTextPart: Codable, Sendable {
     let text: String
 }
 
-private struct GeminiInlineData: Codable, Sendable {
+struct GeminiInlineData: Codable, Sendable {
     let mimeType: String
     let data: String
 
@@ -944,7 +1139,7 @@ private struct GeminiInlineData: Codable, Sendable {
     }
 }
 
-private struct GeminiFileData: Codable, Sendable {
+struct GeminiFileData: Codable, Sendable {
     let fileURI: String
 
     enum CodingKeys: String, CodingKey {
@@ -952,28 +1147,34 @@ private struct GeminiFileData: Codable, Sendable {
     }
 }
 
-private func convertSegmentsToGeminiParts(_ segments: [Transcript.Segment]) -> [GeminiPart] {
-    var parts: [GeminiPart] = []
+private func convertSegmentsToGeminiParts(_ segments: [Transcript.Segment]) -> [GeminiSignedPart] {
+    var parts: [GeminiSignedPart] = []
     parts.reserveCapacity(segments.count)
     for segment in segments {
         switch segment {
         case .text(let t):
-            parts.append(.text(GeminiTextPart(text: t.content)))
+            parts.append(GeminiSignedPart(part: .text(GeminiTextPart(text: t.content))))
         case .structure(let s):
-            parts.append(.text(GeminiTextPart(text: s.content.jsonString)))
+            parts.append(GeminiSignedPart(part: .text(GeminiTextPart(text: s.content.jsonString))))
         case .image(let img):
             switch img.source {
             case .data(let data, let mime):
-                parts.append(.inlineData(GeminiInlineData(mimeType: mime, data: data.base64EncodedString())))
+                parts.append(
+                    GeminiSignedPart(
+                        part: .inlineData(GeminiInlineData(mimeType: mime, data: data.base64EncodedString()))
+                    )
+                )
             case .url(let url):
-                parts.append(.fileData(GeminiFileData(fileURI: url.absoluteString)))
+                parts.append(
+                    GeminiSignedPart(part: .fileData(GeminiFileData(fileURI: url.absoluteString)))
+                )
             }
         }
     }
     return parts
 }
 
-private struct GeminiFunctionCall: Codable, Sendable {
+struct GeminiFunctionCall: Codable, Sendable {
     let name: String
     let args: [String: JSONValue]?
 
@@ -983,7 +1184,7 @@ private struct GeminiFunctionCall: Codable, Sendable {
     }
 }
 
-private struct GeminiFunctionResponse: Codable, Sendable {
+struct GeminiFunctionResponse: Codable, Sendable {
     let name: String
     let response: [String: JSONValue]
 }

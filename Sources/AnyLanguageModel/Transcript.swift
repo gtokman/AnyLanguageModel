@@ -314,10 +314,24 @@ public struct Transcript: Sendable, Equatable, Codable {
 
         private var calls: [ToolCall]
 
+        /// Opaque provider-specific metadata (e.g. Gemini thought signatures).
+        internal var _providerData: Data?
+
         public init<S>(id: String = UUID().uuidString, _ calls: S)
         where S: Sequence, S.Element == ToolCall {
             self.id = id
             self.calls = Array(calls)
+        }
+
+        init<S>(id: String = UUID().uuidString, _ calls: S, providerData: Data?)
+        where S: Sequence, S.Element == ToolCall {
+            self.id = id
+            self.calls = Array(calls)
+            self._providerData = providerData
+        }
+
+        public static func == (lhs: Self, rhs: Self) -> Bool {
+            lhs.id == rhs.id && lhs.calls == rhs.calls
         }
     }
 
@@ -368,6 +382,9 @@ public struct Transcript: Sendable, Equatable, Codable {
         /// Ordered prompt segments.
         public var segments: [Segment]
 
+        /// Opaque provider-specific metadata (e.g. Gemini thought signatures).
+        internal var _providerData: Data?
+
         public init(
             id: String = UUID().uuidString,
             assetIDs: [String],
@@ -376,6 +393,22 @@ public struct Transcript: Sendable, Equatable, Codable {
             self.id = id
             self.assetIDs = assetIDs
             self.segments = segments
+        }
+
+        init(
+            id: String = UUID().uuidString,
+            assetIDs: [String] = [],
+            segments: [Segment],
+            providerData: Data?
+        ) {
+            self.id = id
+            self.assetIDs = assetIDs
+            self.segments = segments
+            self._providerData = providerData
+        }
+
+        public static func == (lhs: Self, rhs: Self) -> Bool {
+            lhs.id == rhs.id && lhs.assetIDs == rhs.assetIDs && lhs.segments == rhs.segments
         }
     }
 

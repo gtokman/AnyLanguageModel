@@ -179,6 +179,34 @@ struct GeminiLanguageModelTests {
         #expect(response.content.contains("30"))
     }
 
+    @Test func imageGeneration() async throws {
+        let imageModel = GeminiLanguageModel(
+            apiKey: geminiAPIKey!,
+            model: "gemini-2.5-flash-preview-05-20"
+        )
+        let session = LanguageModelSession(model: imageModel)
+
+        var options = GenerationOptions()
+        options[custom: GeminiLanguageModel.self] = .init(
+            thinking: .disabled,
+            imageGeneration: .init(outputMimeType: .png)
+        )
+
+        let response = try await session.respond(
+            to: "Generate a simple red circle on a white background",
+            options: options
+        )
+        #expect(!response.generatedImages.isEmpty)
+        if let first = response.generatedImages.first {
+            if case .data(let data, let mimeType) = first.source {
+                #expect(mimeType == "image/png")
+                #expect(data.count > 0)
+            } else {
+                Issue.record("Expected data source for generated image")
+            }
+        }
+    }
+
     @Suite("Structured Output")
     struct StructuredOutputTests {
         @Generable
@@ -266,5 +294,119 @@ struct GeminiLanguageModelTests {
             #expect((finalSnapshot.content.name?.isEmpty ?? true) == false)
             #expect((finalSnapshot.content.age ?? 0) > 0)
         }
+    }
+}
+
+// MARK: - Unit Tests (no API key required)
+
+@Suite("GeminiLanguageModel Unit Tests")
+struct GeminiLanguageModelUnitTests {
+
+    @Test func imageGenerationConfigInRequestBody() throws {
+        var options = GenerationOptions()
+        options[custom: GeminiLanguageModel.self] = .init(
+            thinking: .disabled,
+            imageGeneration: .init()
+        )
+
+        let params = try GeminiLanguageModel._testCreateGenerateContentParams(options: options)
+
+        guard case .object(let generationConfig) = params["generationConfig"] else {
+            Issue.record("Missing generationConfig")
+            return
+        }
+
+        #expect(generationConfig["responseModalities"] == .array([.string("TEXT"), .string("IMAGE")]))
+    }
+
+    @Test func imageGenerationConfigWithAllParams() throws {
+        var options = GenerationOptions()
+        options[custom: GeminiLanguageModel.self] = .init(
+            thinking: .disabled,
+            imageGeneration: .init(
+                aspectRatio: .widescreen,
+                imageSize: .hd,
+                outputMimeType: .png
+            )
+        )
+
+        let params = try GeminiLanguageModel._testCreateGenerateContentParams(options: options)
+
+        guard case .object(let generationConfig) = params["generationConfig"] else {
+            Issue.record("Missing generationConfig")
+            return
+        }
+
+        #expect(generationConfig["responseModalities"] == .array([.string("TEXT"), .string("IMAGE")]))
+
+        guard case .object(let imageConfig) = generationConfig["imageConfig"] else {
+            Issue.record("Missing imageConfig")
+            return
+        }
+
+        #expect(imageConfig["aspectRatio"] == .string("16:9"))
+        #expect(imageConfig["imageSize"] == .string("2048"))
+        #expect(imageConfig["outputMimeType"] == .string("image/png"))
+    }
+
+    @Test func noImageConfigWhenNil() throws {
+        var options = GenerationOptions()
+        options[custom: GeminiLanguageModel.self] = .init(thinking: .disabled)
+
+        let params = try GeminiLanguageModel._testCreateGenerateContentParams(options: options)
+
+        guard case .object(let generationConfig) = params["generationConfig"] else {
+            Issue.record("Missing generationConfig")
+            return
+        }
+
+        #expect(generationConfig["responseModalities"] == nil)
+        #expect(generationConfig["imageConfig"] == nil)
+    }
+
+    @Test func signedPartRoundTrip() throws {
+        // JSON with text and thoughtSignature at the same level
+        let json = """
+        {"text": "Hello world", "thoughtSignature": "abc123encrypted"}
+        """
+        let data = Data(json.utf8)
+
+        let decoded = try JSONDecoder().decode(GeminiSignedPart.self, from: data)
+        #expect(decoded.thoughtSignature == "abc123encrypted")
+        if case .text(let textPart) = decoded.part {
+            #expect(textPart.text == "Hello world")
+        } else {
+            Issue.record("Expected text part")
+        }
+
+        // Re-encode and verify round-trip
+        let reEncoded = try JSONEncoder().encode(decoded)
+        let reDecoded = try JSONDecoder().decode(GeminiSignedPart.self, from: reEncoded)
+        #expect(reDecoded.thoughtSignature == "abc123encrypted")
+        if case .text(let textPart) = reDecoded.part {
+            #expect(textPart.text == "Hello world")
+        } else {
+            Issue.record("Expected text part after round-trip")
+        }
+    }
+
+    @Test func signedPartWithoutSignature() throws {
+        let json = """
+        {"text": "No signature here"}
+        """
+        let data = Data(json.utf8)
+
+        let decoded = try JSONDecoder().decode(GeminiSignedPart.self, from: data)
+        #expect(decoded.thoughtSignature == nil)
+        if case .text(let textPart) = decoded.part {
+            #expect(textPart.text == "No signature here")
+        } else {
+            Issue.record("Expected text part")
+        }
+
+        // Re-encode and verify round-trip
+        let reEncoded = try JSONEncoder().encode(decoded)
+        let reDecoded = try JSONDecoder().decode(GeminiSignedPart.self, from: reEncoded)
+        #expect(reDecoded.thoughtSignature == nil)
     }
 }
