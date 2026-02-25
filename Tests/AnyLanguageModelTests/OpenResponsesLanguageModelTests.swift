@@ -1,4 +1,5 @@
 import Foundation
+import JSONSchema
 import Testing
 
 @testable import AnyLanguageModel
@@ -224,6 +225,258 @@ struct OpenResponsesLanguageModelTests {
                 #expect((finalSnapshot.content.name?.isEmpty ?? true) == false)
                 #expect((finalSnapshot.content.age ?? 0) > 0)
             }
+        }
+    }
+
+    @Suite("Image Generation Tool")
+    struct ImageGenerationToolTests {
+        typealias ImageGenerationTool = OpenResponsesLanguageModel.CustomGenerationOptions.ImageGenerationTool
+
+        @Test func defaultInitialization() {
+            let tool = ImageGenerationTool()
+            #expect(tool.quality == nil)
+            #expect(tool.size == nil)
+            #expect(tool.background == nil)
+            #expect(tool.outputFormat == nil)
+            #expect(tool.outputCompression == nil)
+            #expect(tool.inputFidelity == nil)
+            #expect(tool.partialImages == nil)
+        }
+
+        @Test func initializationWithParameters() {
+            let tool = ImageGenerationTool(
+                quality: .high,
+                size: .square,
+                background: .transparent,
+                outputFormat: .png,
+                outputCompression: 80,
+                inputFidelity: .high,
+                partialImages: 3
+            )
+            #expect(tool.quality == .high)
+            #expect(tool.size == .square)
+            #expect(tool.background == .transparent)
+            #expect(tool.outputFormat == .png)
+            #expect(tool.outputCompression == 80)
+            #expect(tool.inputFidelity == .high)
+            #expect(tool.partialImages == 3)
+        }
+
+        @Test func imageSizeRawValues() {
+            #expect(ImageGenerationTool.ImageSize.square.rawValue == "1024x1024")
+            #expect(ImageGenerationTool.ImageSize.landscape.rawValue == "1536x1024")
+            #expect(ImageGenerationTool.ImageSize.portrait.rawValue == "1024x1536")
+            #expect(ImageGenerationTool.ImageSize.auto.rawValue == "auto")
+        }
+
+        @Test func requestBodyIncludesImageGenerationTool() throws {
+            var options = GenerationOptions()
+            options[custom: OpenResponsesLanguageModel.self] = .init(
+                imageGeneration: .init(quality: .high, size: .landscape)
+            )
+            let body = try OpenResponsesLanguageModel._testCreateRequestBody(
+                model: "gpt-4.1",
+                options: options
+            )
+            guard case .object(let dict) = body,
+                case .array(let tools) = dict["tools"]
+            else {
+                Issue.record("Expected tools array in body")
+                return
+            }
+            #expect(tools.count == 1)
+            guard case .object(let toolObj) = tools.first else {
+                Issue.record("Expected tool object")
+                return
+            }
+            #expect(toolObj["type"] == .string("image_generation"))
+            #expect(toolObj["quality"] == .string("high"))
+            #expect(toolObj["size"] == .string("1536x1024"))
+        }
+
+        @Test func requestBodyIncludesAllImageGenerationParams() throws {
+            var options = GenerationOptions()
+            options[custom: OpenResponsesLanguageModel.self] = .init(
+                imageGeneration: .init(
+                    quality: .medium,
+                    size: .portrait,
+                    background: .opaque,
+                    outputFormat: .webp,
+                    outputCompression: 90,
+                    inputFidelity: .low,
+                    partialImages: 2
+                )
+            )
+            let body = try OpenResponsesLanguageModel._testCreateRequestBody(
+                model: "gpt-4.1",
+                options: options
+            )
+            guard case .object(let dict) = body,
+                case .array(let tools) = dict["tools"],
+                case .object(let toolObj) = tools.first
+            else {
+                Issue.record("Expected tools array with tool object")
+                return
+            }
+            #expect(toolObj["type"] == .string("image_generation"))
+            #expect(toolObj["quality"] == .string("medium"))
+            #expect(toolObj["size"] == .string("1024x1536"))
+            #expect(toolObj["background"] == .string("opaque"))
+            #expect(toolObj["output_format"] == .string("webp"))
+            #expect(toolObj["output_compression"] == .int(90))
+            #expect(toolObj["input_fidelity"] == .string("low"))
+            #expect(toolObj["partial_images"] == .int(2))
+        }
+
+        @Test func requestBodyWithFunctionAndImageGenerationTools() throws {
+            var options = GenerationOptions()
+            options[custom: OpenResponsesLanguageModel.self] = .init(
+                imageGeneration: .init(quality: .auto)
+            )
+            let body = try OpenResponsesLanguageModel._testCreateRequestBody(
+                model: "gpt-4.1",
+                options: options,
+                tools: [WeatherTool()]
+            )
+            guard case .object(let dict) = body,
+                case .array(let tools) = dict["tools"]
+            else {
+                Issue.record("Expected tools array in body")
+                return
+            }
+            #expect(tools.count == 2)
+            // First should be the function tool
+            if case .object(let firstTool) = tools[0] {
+                #expect(firstTool["type"] == .string("function"))
+            }
+            // Second should be image_generation
+            if case .object(let secondTool) = tools[1] {
+                #expect(secondTool["type"] == .string("image_generation"))
+                #expect(secondTool["quality"] == .string("auto"))
+            }
+        }
+
+        @Test func requestBodyWithoutImageGeneration() throws {
+            let options = GenerationOptions()
+            let body = try OpenResponsesLanguageModel._testCreateRequestBody(
+                model: "gpt-4.1",
+                options: options
+            )
+            guard case .object(let dict) = body else {
+                Issue.record("Expected object body")
+                return
+            }
+            #expect(dict["tools"] == nil)
+        }
+
+        @Test func extractImagesFromOutput() throws {
+            let base64Data = Data("test image data".utf8).base64EncodedString()
+            let output: [JSONValue] = [
+                .object([
+                    "type": .string("image_generation_call"),
+                    "id": .string("ig_123"),
+                    "status": .string("completed"),
+                    "result": .string(base64Data),
+                    "revised_prompt": .string("A detailed image of a cat"),
+                ])
+            ]
+            let images = OpenResponsesLanguageModel._testExtractImages(from: output)
+            #expect(images.count == 1)
+            #expect(images[0].revisedPrompt == "A detailed image of a cat")
+            if case .data(let data, let mimeType) = images[0].image.source {
+                #expect(mimeType == "image/png")
+                #expect(data == Data(base64Encoded: base64Data))
+            } else {
+                Issue.record("Expected data source")
+            }
+        }
+
+        @Test func extractImagesWithCustomMimeType() throws {
+            let base64Data = Data("jpeg data".utf8).base64EncodedString()
+            let output: [JSONValue] = [
+                .object([
+                    "type": .string("image_generation_call"),
+                    "id": .string("ig_456"),
+                    "result": .string(base64Data),
+                ])
+            ]
+            let images = OpenResponsesLanguageModel._testExtractImages(from: output, mimeType: "image/jpeg")
+            #expect(images.count == 1)
+            #expect(images[0].revisedPrompt == nil)
+            if case .data(_, let mimeType) = images[0].image.source {
+                #expect(mimeType == "image/jpeg")
+            } else {
+                Issue.record("Expected data source")
+            }
+        }
+
+        @Test func extractImagesIgnoresNonImageItems() throws {
+            let output: [JSONValue] = [
+                .object([
+                    "type": .string("message"),
+                    "role": .string("assistant"),
+                    "content": .array([
+                        .object(["type": .string("output_text"), "text": .string("Hello")])
+                    ]),
+                ]),
+                .object([
+                    "type": .string("function_call"),
+                    "call_id": .string("call_1"),
+                    "name": .string("test"),
+                    "arguments": .string("{}"),
+                ]),
+            ]
+            let images = OpenResponsesLanguageModel._testExtractImages(from: output)
+            #expect(images.isEmpty)
+        }
+
+        @Test func generatedImagesFromTranscriptEntries() {
+            let imageData = Data("test".utf8)
+            let imageSegment = Transcript.ImageSegment(data: imageData, mimeType: "image/png")
+            let entries: [Transcript.Entry] = [
+                .response(Transcript.Response(
+                    assetIDs: [],
+                    segments: [
+                        .image(imageSegment),
+                        .text(.init(content: "A revised prompt")),
+                    ]
+                ))
+            ]
+            let response = LanguageModelSession.Response<String>(
+                content: "",
+                rawContent: GeneratedContent(""),
+                transcriptEntries: ArraySlice(entries)
+            )
+            #expect(response.generatedImages.count == 1)
+            #expect(response.generatedImages[0].id == imageSegment.id)
+        }
+
+        @Test func generatedImagesEmptyWhenNoImages() {
+            let entries: [Transcript.Entry] = [
+                .response(Transcript.Response(
+                    assetIDs: [],
+                    segments: [.text(.init(content: "Just text"))]
+                ))
+            ]
+            let response = LanguageModelSession.Response<String>(
+                content: "Just text",
+                rawContent: GeneratedContent("Just text"),
+                transcriptEntries: ArraySlice(entries)
+            )
+            #expect(response.generatedImages.isEmpty)
+        }
+
+        @Test func imageGenerationToolCodable() throws {
+            let tool = ImageGenerationTool(
+                quality: .high,
+                size: .square,
+                background: .transparent,
+                outputFormat: .png,
+                outputCompression: 75
+            )
+            let data = try JSONEncoder().encode(tool)
+            let decoded = try JSONDecoder().decode(ImageGenerationTool.self, from: data)
+            #expect(decoded == tool)
         }
     }
 }

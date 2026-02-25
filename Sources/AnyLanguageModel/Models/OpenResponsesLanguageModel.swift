@@ -80,6 +80,10 @@ public struct OpenResponsesLanguageModel: LanguageModel {
         /// Controls how the service truncates the input when it exceeds the model context window.
         public var truncation: Truncation?
 
+        /// Configuration for the built-in image generation tool.
+        /// When set, an `image_generation` tool is included in the request.
+        public var imageGeneration: ImageGenerationTool?
+
         /// Additional parameters merged into the request body (applied last).
         public var extraBody: [String: JSONValue]?
 
@@ -281,6 +285,83 @@ public struct OpenResponsesLanguageModel: LanguageModel {
             case disabled
         }
 
+        /// Configuration for the built-in image generation tool.
+        ///
+        /// When set, an `image_generation` tool entry is included in the request's
+        /// `tools` array, enabling the model to generate images as part of its response.
+        public struct ImageGenerationTool: Sendable, Hashable, Codable {
+            /// The quality level for image generation.
+            public var quality: Quality?
+            /// The dimensions of the generated image.
+            public var size: ImageSize?
+            /// The background style for the generated image.
+            public var background: Background?
+            /// The output format for the generated image.
+            public var outputFormat: OutputFormat?
+            /// The compression level for the output image (0–100).
+            public var outputCompression: Int?
+            /// The fidelity level for input images used during editing.
+            public var inputFidelity: InputFidelity?
+            /// The number of partial images to generate during streaming.
+            public var partialImages: Int?
+
+            /// The quality level for generated images.
+            public enum Quality: String, Sendable, Hashable, Codable { case low, medium, high, auto }
+
+            /// The dimensions of the generated image.
+            public enum ImageSize: String, Sendable, Hashable, Codable {
+                case square = "1024x1024"
+                case landscape = "1536x1024"
+                case portrait = "1024x1536"
+                case auto
+            }
+
+            /// The background style for the generated image.
+            public enum Background: String, Sendable, Hashable, Codable { case opaque, transparent, auto }
+
+            /// The output file format for the generated image.
+            public enum OutputFormat: String, Sendable, Hashable, Codable { case png, jpeg, webp }
+
+            /// The fidelity level for input images during editing.
+            public enum InputFidelity: String, Sendable, Hashable, Codable { case high, low }
+
+            enum CodingKeys: String, CodingKey {
+                case quality, size, background
+                case outputFormat = "output_format"
+                case outputCompression = "output_compression"
+                case inputFidelity = "input_fidelity"
+                case partialImages = "partial_images"
+            }
+
+            /// Creates an image generation tool configuration.
+            ///
+            /// - Parameters:
+            ///   - quality: The quality level for image generation.
+            ///   - size: The dimensions of the generated image.
+            ///   - background: The background style for the generated image.
+            ///   - outputFormat: The output format for the generated image.
+            ///   - outputCompression: The compression level (0–100).
+            ///   - inputFidelity: The fidelity level for input images used during editing.
+            ///   - partialImages: The number of partial images to generate during streaming.
+            public init(
+                quality: Quality? = nil,
+                size: ImageSize? = nil,
+                background: Background? = nil,
+                outputFormat: OutputFormat? = nil,
+                outputCompression: Int? = nil,
+                inputFidelity: InputFidelity? = nil,
+                partialImages: Int? = nil
+            ) {
+                self.quality = quality
+                self.size = size
+                self.background = background
+                self.outputFormat = outputFormat
+                self.outputCompression = outputCompression
+                self.inputFidelity = inputFidelity
+                self.partialImages = partialImages
+            }
+        }
+
         enum CodingKeys: String, CodingKey {
             case toolChoice = "tool_choice"
             case allowedTools = "allowed_tools"
@@ -297,6 +378,7 @@ public struct OpenResponsesLanguageModel: LanguageModel {
             case metadata
             case safetyIdentifier = "safety_identifier"
             case truncation
+            case imageGeneration = "image_generation"
             case extraBody = "extra_body"
         }
 
@@ -318,6 +400,7 @@ public struct OpenResponsesLanguageModel: LanguageModel {
         ///   - metadata: Key-value pairs (keys max 64 chars, values max 512 chars).
         ///   - safetyIdentifier: A stable identifier used for safety monitoring and abuse detection.
         ///   - truncation: Controls how the service truncates input when it exceeds the context window.
+        ///   - imageGeneration: Configuration for the built-in image generation tool.
         ///   - extraBody: Additional parameters merged into the request body.
         public init(
             toolChoice: ToolChoice? = nil,
@@ -335,6 +418,7 @@ public struct OpenResponsesLanguageModel: LanguageModel {
             metadata: [String: String]? = nil,
             safetyIdentifier: String? = nil,
             truncation: Truncation? = nil,
+            imageGeneration: ImageGenerationTool? = nil,
             extraBody: [String: JSONValue]? = nil
         ) {
             self.toolChoice = toolChoice
@@ -352,6 +436,7 @@ public struct OpenResponsesLanguageModel: LanguageModel {
             self.metadata = metadata
             self.safetyIdentifier = safetyIdentifier
             self.truncation = truncation
+            self.imageGeneration = imageGeneration
             self.extraBody = extraBody
         }
     }
@@ -553,6 +638,29 @@ public struct OpenResponsesLanguageModel: LanguageModel {
             break
         }
 
+        // Extract generated images from the output
+        let imageMimeType: String
+        if let fmt = options[custom: OpenResponsesLanguageModel.self]?.imageGeneration?.outputFormat {
+            switch fmt {
+            case .png: imageMimeType = "image/png"
+            case .jpeg: imageMimeType = "image/jpeg"
+            case .webp: imageMimeType = "image/webp"
+            }
+        } else {
+            imageMimeType = "image/png"
+        }
+        let generatedImages = extractImagesFromOutput(lastOutput, mimeType: imageMimeType)
+        if !generatedImages.isEmpty {
+            var imageSegments: [Transcript.Segment] = []
+            for img in generatedImages {
+                imageSegments.append(.image(img.image))
+                if let revisedPrompt = img.revisedPrompt {
+                    imageSegments.append(.text(.init(content: revisedPrompt)))
+                }
+            }
+            entries.append(.response(Transcript.Response(assetIDs: [], segments: imageSegments)))
+        }
+
         if type == String.self {
             return LanguageModelSession.Response(
                 content: text as! Content,
@@ -581,6 +689,38 @@ public struct OpenResponsesLanguageModel: LanguageModel {
         }
         let raw = GeneratedContent(properties: [:])
         return (try type.init(raw), raw)
+    }
+}
+
+// MARK: - Test Helpers
+
+extension OpenResponsesLanguageModel {
+    /// Creates a request body for testing purposes.
+    /// - Returns: The JSON request body that would be sent to the API.
+    internal static func _testCreateRequestBody(
+        model: String,
+        options: GenerationOptions,
+        tools: [any Tool] = []
+    ) throws -> JSONValue {
+        let openResponsesTools: [OpenResponsesTool]? =
+            tools.isEmpty ? nil : tools.map { convertToolToOpenResponsesFormat($0) }
+        return try OpenResponsesAPI.createRequestBody(
+            model: model,
+            messages: [],
+            tools: openResponsesTools,
+            generating: String.self,
+            options: options,
+            stream: false
+        )
+    }
+
+    /// Extracts generated images from a mock API output for testing purposes.
+    /// - Returns: Pairs of image segments and optional revised prompts.
+    internal static func _testExtractImages(
+        from output: [JSONValue],
+        mimeType: String = "image/png"
+    ) -> [(image: Transcript.ImageSegment, revisedPrompt: String?)] {
+        extractImagesFromOutput(output, mimeType: mimeType)
     }
 }
 
@@ -719,6 +859,22 @@ private enum OpenResponsesAPI {
             }
             if let v = custom.safetyIdentifier { body["safety_identifier"] = .string(v) }
             if let v = custom.truncation { body["truncation"] = .string(v.rawValue) }
+            if let imgTool = custom.imageGeneration {
+                var toolsArray: [JSONValue] = []
+                if case .array(let existing) = body["tools"] {
+                    toolsArray = existing
+                }
+                var toolObj: [String: JSONValue] = ["type": .string("image_generation")]
+                if let q = imgTool.quality { toolObj["quality"] = .string(q.rawValue) }
+                if let s = imgTool.size { toolObj["size"] = .string(s.rawValue) }
+                if let b = imgTool.background { toolObj["background"] = .string(b.rawValue) }
+                if let f = imgTool.outputFormat { toolObj["output_format"] = .string(f.rawValue) }
+                if let c = imgTool.outputCompression { toolObj["output_compression"] = .int(c) }
+                if let i = imgTool.inputFidelity { toolObj["input_fidelity"] = .string(i.rawValue) }
+                if let p = imgTool.partialImages { toolObj["partial_images"] = .int(p) }
+                toolsArray.append(.object(toolObj))
+                body["tools"] = .array(toolsArray)
+            }
             if let extra = custom.extraBody {
                 for (k, v) in extra { body[k] = v }
             }
@@ -995,6 +1151,29 @@ private func extractToolCallsFromOutput(_ output: [JSONValue]?) -> [OpenResponse
         collectOpenResponsesToolCalls(from: item, into: &result)
     }
     return result
+}
+
+private func extractImagesFromOutput(
+    _ output: [JSONValue]?,
+    mimeType: String = "image/png"
+) -> [(image: Transcript.ImageSegment, revisedPrompt: String?)] {
+    guard let output else { return [] }
+    var results: [(image: Transcript.ImageSegment, revisedPrompt: String?)] = []
+    for item in output {
+        guard case .object(let obj) = item,
+            obj["type"].flatMap({ if case .string(let t) = $0 { return t } else { return nil } })
+                == "image_generation_call",
+            case .string(let base64String)? = obj["result"]
+        else { continue }
+        let revisedPrompt: String? = obj["revised_prompt"].flatMap {
+            if case .string(let s) = $0 { return s } else { return nil }
+        }
+        if let data = Data(base64Encoded: base64String) {
+            let image = Transcript.ImageSegment(data: data, mimeType: mimeType)
+            results.append((image: image, revisedPrompt: revisedPrompt))
+        }
+    }
+    return results
 }
 
 private func extractTextFromOutput(_ output: [JSONValue]?) -> String? {
