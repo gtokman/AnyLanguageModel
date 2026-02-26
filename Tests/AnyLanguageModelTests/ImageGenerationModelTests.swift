@@ -700,9 +700,10 @@ struct GeminiNativeImageGenerationModelTests {
 
     @Test func imageResolutionRawValues() {
         typealias IR = GeminiNativeImageGenerationModel.CustomImageGenerationOptions.ImageResolution
-        #expect(IR.standard.rawValue == "1024")
-        #expect(IR.hd.rawValue == "2048")
-        #expect(IR.ultraHD.rawValue == "4096")
+        #expect(IR.small.rawValue == "512px")
+        #expect(IR.standard.rawValue == "1K")
+        #expect(IR.hd.rawValue == "2K")
+        #expect(IR.ultraHD.rawValue == "4K")
     }
 
     @Test func outputMimeTypeRawValues() {
@@ -726,7 +727,7 @@ struct GeminiNativeImageGenerationModelTests {
             case .object(let imageConfig) = config["imageConfig"]
         {
             #expect(imageConfig["aspectRatio"] == .string("16:9"))
-            #expect(imageConfig["imageSize"] == .string("2048"))
+            #expect(imageConfig["imageSize"] == .string("2K"))
             #expect(imageConfig["outputMimeType"] == .string("image/png"))
         } else {
             Issue.record("Expected generationConfig with imageConfig")
@@ -815,7 +816,7 @@ struct GeminiNativeImageGenerationModelTests {
         if case .object(let config) = body["generationConfig"],
             case .object(let imageConfig) = config["imageConfig"]
         {
-            #expect(imageConfig["imageSize"] == .string("4096"))
+            #expect(imageConfig["imageSize"] == .string("4K"))
         } else {
             Issue.record("Expected generationConfig with imageConfig")
         }

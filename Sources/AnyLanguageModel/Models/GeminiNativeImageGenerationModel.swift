@@ -57,24 +57,36 @@ public struct GeminiNativeImageGenerationModel: ImageGenerationModel {
         public enum AspectRatio: String, Sendable, Hashable {
             /// Square (1:1).
             case square = "1:1"
-            /// Standard landscape (4:3).
-            case standard = "4:3"
+            /// Portrait (2:3).
+            case portrait2x3 = "2:3"
+            /// Landscape (3:2).
+            case landscape3x2 = "3:2"
             /// Standard portrait (3:4).
             case standardPortrait = "3:4"
-            /// Widescreen landscape (16:9).
-            case widescreen = "16:9"
+            /// Standard landscape (4:3).
+            case standard = "4:3"
+            /// Tall portrait (4:5).
+            case portrait4x5 = "4:5"
+            /// Short landscape (5:4).
+            case landscape5x4 = "5:4"
             /// Widescreen portrait (9:16).
             case widescreenPortrait = "9:16"
+            /// Widescreen landscape (16:9).
+            case widescreen = "16:9"
+            /// Ultra-wide landscape (21:9).
+            case ultraWide = "21:9"
         }
 
         /// Supported image resolutions for Gemini native image generation.
         public enum ImageResolution: String, Sendable, Hashable {
+            /// 512px resolution.
+            case small = "512px"
             /// 1K resolution (1024px).
-            case standard = "1024"
+            case standard = "1K"
             /// 2K resolution (2048px).
-            case hd = "2048"
+            case hd = "2K"
             /// 4K resolution (4096px). Only available with `gemini-3-pro-image-preview`.
-            case ultraHD = "4096"
+            case ultraHD = "4K"
         }
 
         /// Supported output MIME types for Gemini native image generation.
@@ -168,6 +180,7 @@ public struct GeminiNativeImageGenerationModel: ImageGenerationModel {
             for candidate in candidates {
                 if let parts = candidate.content?.parts {
                     for part in parts {
+                        if part.thought == true { continue }
                         if let inlineData = part.inlineData,
                             let data = Data(base64Encoded: inlineData.data)
                         {
@@ -293,6 +306,7 @@ private struct GeminiNativeContent: Decodable, Sendable {
 private struct GeminiNativePart: Decodable, Sendable {
     let text: String?
     let inlineData: GeminiNativeInlineData?
+    let thought: Bool?
 }
 
 private struct GeminiNativeInlineData: Decodable, Sendable {

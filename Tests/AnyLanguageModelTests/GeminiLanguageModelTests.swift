@@ -345,7 +345,7 @@ struct GeminiLanguageModelUnitTests {
         }
 
         #expect(imageConfig["aspectRatio"] == .string("16:9"))
-        #expect(imageConfig["imageSize"] == .string("2048"))
+        #expect(imageConfig["imageSize"] == .string("2K"))
         #expect(imageConfig["outputMimeType"] == .string("image/png"))
     }
 

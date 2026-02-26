@@ -1199,6 +1199,50 @@ let edited = try await session.respond(
 > [!NOTE]
 > Streaming (`streamResponse`) does not currently surface generated images.
 
+**Nano Banana (Gemini 2.5 Flash Image / Gemini 3 Pro Image)** —
+Google's [Nano Banana](https://ai.google.dev/gemini-api/docs/image-generation)
+models generate and edit images natively within conversations.
+Use `gemini-2.5-flash-image` (Nano Banana) or `gemini-3-pro-image-preview`
+(Nano Banana Pro) with either the `GeminiLanguageModel` for multi-turn
+conversations or `GeminiNativeImageGenerationModel` for standalone generation:
+
+```swift
+// Multi-turn conversation with Nano Banana
+let model = GeminiLanguageModel(
+    apiKey: ProcessInfo.processInfo.environment["GEMINI_API_KEY"]!,
+    model: "gemini-2.5-flash-image"
+)
+let session = LanguageModelSession(model: model)
+
+var options = GenerationOptions()
+options[custom: GeminiLanguageModel.self] = .init(
+    imageGeneration: .init(
+        aspectRatio: .widescreen,    // 1:1, 2:3, 3:2, 3:4, 4:3, 4:5, 5:4, 9:16, 16:9, 21:9
+        imageSize: .hd,              // .small (512px), .standard (1K), .hd (2K), .ultraHD (4K)
+        outputMimeType: .png         // .png, .jpeg
+    )
+)
+
+let response = try await session.respond(
+    to: "Draw a cartoon cat wearing a top hat",
+    options: options
+)
+
+for image in response.generatedImages {
+    // Use image.source to access .data(Data, String) or .url(URL)
+}
+
+// Multi-turn editing — the model remembers the previous image
+let edited = try await session.respond(
+    to: "Now change the hat to a beret",
+    options: options
+)
+```
+
+Nano Banana Pro (`gemini-3-pro-image-preview`) supports 4K resolution
+and additional aspect ratios. Thought signatures are preserved automatically
+across turns so the model can reference and edit previous images.
+
 Native Gemini also supports image editing by passing `inputImages`:
 
 ```swift

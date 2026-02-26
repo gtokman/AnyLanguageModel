@@ -137,24 +137,36 @@ public struct GeminiLanguageModel: LanguageModel {
             public enum AspectRatio: String, Sendable, Hashable {
                 /// Square (1:1).
                 case square = "1:1"
-                /// Standard landscape (4:3).
-                case standard = "4:3"
+                /// Portrait (2:3).
+                case portrait2x3 = "2:3"
+                /// Landscape (3:2).
+                case landscape3x2 = "3:2"
                 /// Standard portrait (3:4).
                 case standardPortrait = "3:4"
-                /// Widescreen landscape (16:9).
-                case widescreen = "16:9"
+                /// Standard landscape (4:3).
+                case standard = "4:3"
+                /// Tall portrait (4:5).
+                case portrait4x5 = "4:5"
+                /// Short landscape (5:4).
+                case landscape5x4 = "5:4"
                 /// Widescreen portrait (9:16).
                 case widescreenPortrait = "9:16"
+                /// Widescreen landscape (16:9).
+                case widescreen = "16:9"
+                /// Ultra-wide landscape (21:9).
+                case ultraWide = "21:9"
             }
 
             /// Supported image resolutions for inline image generation.
             public enum ImageResolution: String, Sendable, Hashable {
+                /// 512px resolution.
+                case small = "512px"
                 /// 1K resolution (1024px).
-                case standard = "1024"
+                case standard = "1K"
                 /// 2K resolution (2048px).
-                case hd = "2048"
+                case hd = "2K"
                 /// 4K resolution (4096px). Only available with `gemini-3-pro-image-preview`.
-                case ultraHD = "4096"
+                case ultraHD = "4K"
             }
 
             /// Supported output MIME types for inline image generation.
@@ -414,18 +426,21 @@ public struct GeminiLanguageModel: LanguageModel {
                     continue
                 }
             } else {
-                // No function calls — extract text and inline images
+                // No function calls — extract text and inline images,
+                // filtering out thought/reasoning parts
                 let text =
                     responseParts.compactMap { signedPart -> String? in
+                        if signedPart.thought == true { return nil }
                         switch signedPart.part {
                         case .text(let t): return t.text
                         default: return nil
                         }
                     }.joined()
 
-                // Extract generated images from inlineData parts
+                // Extract generated images from inlineData parts (skip thought parts)
                 var imageSegments: [Transcript.Segment] = []
                 for signedPart in responseParts {
+                    if signedPart.thought == true { continue }
                     if case .inlineData(let data) = signedPart.part,
                        let imageData = Data(base64Encoded: data.data)
                     {
@@ -529,6 +544,7 @@ public struct GeminiLanguageModel: LanguageModel {
 
                         if let parts = candidate.content.parts {
                             for signedPart in parts {
+                                if signedPart.thought == true { continue }
                                 if case .text(let textPart) = signedPart.part {
                                     accumulatedText += textPart.text
 
@@ -1038,32 +1054,37 @@ private struct GeminiContent: Codable, Sendable {
 struct GeminiSignedPart: Codable, Sendable {
     var part: GeminiPart
     var thoughtSignature: String?
+    /// Whether this part is a thinking/reasoning part that should not be
+    /// surfaced to the user as content.
+    var thought: Bool?
 
-    init(part: GeminiPart, thoughtSignature: String? = nil) {
+    init(part: GeminiPart, thoughtSignature: String? = nil, thought: Bool? = nil) {
         self.part = part
         self.thoughtSignature = thoughtSignature
+        self.thought = thought
     }
 
-    private enum SignatureCodingKeys: String, CodingKey {
+    private enum MetaCodingKeys: String, CodingKey {
         case thoughtSignature
+        case thought
     }
 
     init(from decoder: any Decoder) throws {
         // Decode the part using the same flat container
         part = try GeminiPart(from: decoder)
-        // Decode thoughtSignature from the same level
-        let container = try decoder.container(keyedBy: SignatureCodingKeys.self)
+        // Decode metadata from the same level
+        let container = try decoder.container(keyedBy: MetaCodingKeys.self)
         thoughtSignature = try container.decodeIfPresent(String.self, forKey: .thoughtSignature)
+        thought = try container.decodeIfPresent(Bool.self, forKey: .thought)
     }
 
     func encode(to encoder: any Encoder) throws {
         // Encode the part (writes its own keys)
         try part.encode(to: encoder)
-        // Encode thoughtSignature at the same level
-        if let sig = thoughtSignature {
-            var container = encoder.container(keyedBy: SignatureCodingKeys.self)
-            try container.encode(sig, forKey: .thoughtSignature)
-        }
+        // Encode metadata at the same level
+        var container = encoder.container(keyedBy: MetaCodingKeys.self)
+        try container.encodeIfPresent(thoughtSignature, forKey: .thoughtSignature)
+        try container.encodeIfPresent(thought, forKey: .thought)
     }
 }
 
