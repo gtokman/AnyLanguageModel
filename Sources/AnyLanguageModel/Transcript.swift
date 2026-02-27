@@ -196,6 +196,90 @@ public struct Transcript: Sendable, Equatable, Codable {
         }
     }
 
+    /// A segment that represents a video for multi-modal outputs.
+    ///
+    /// Use this type to represent generated videos. Videos can be provided
+    /// as raw data with a MIME type or by URL.
+    public struct VideoSegment: Sendable, Identifiable, Equatable, Codable {
+        /// The stable identity of the entity associated with this instance.
+        public var id: String
+
+        /// The source of the video data.
+        public let source: Source
+
+        /// The origin of a video's content.
+        public enum Source: Sendable, Equatable, Codable {
+            /// Video bytes and their MIME type (for example, `video/mp4`).
+            case data(Data, mimeType: String)
+            /// A URL that references a video.
+            case url(URL)
+
+            private enum CodingKeys: String, CodingKey { case kind, data, mimeType, url }
+
+            public init(from decoder: Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                let kind = try container.decode(String.self, forKey: .kind)
+                switch kind {
+                case "data":
+                    let data = try container.decode(Data.self, forKey: .data)
+                    let mimeType = try container.decode(String.self, forKey: .mimeType)
+                    self = .data(data, mimeType: mimeType)
+                case "url":
+                    let url = try container.decode(URL.self, forKey: .url)
+                    self = .url(url)
+                default:
+                    throw DecodingError.dataCorrupted(
+                        .init(codingPath: [CodingKeys.kind], debugDescription: "Unknown video source kind: \(kind)")
+                    )
+                }
+            }
+
+            public func encode(to encoder: Encoder) throws {
+                var container = encoder.container(keyedBy: CodingKeys.self)
+                switch self {
+                case .data(let data, let mimeType):
+                    try container.encode("data", forKey: .kind)
+                    try container.encode(data, forKey: .data)
+                    try container.encode(mimeType, forKey: .mimeType)
+                case .url(let url):
+                    try container.encode("url", forKey: .kind)
+                    try container.encode(url, forKey: .url)
+                }
+            }
+        }
+
+        /// Creates a video segment from a source.
+        ///
+        /// - Parameters:
+        ///   - id: A unique identifier for this segment. Defaults to a generated UUID.
+        ///   - source: The video source.
+        public init(id: String = UUID().uuidString, source: Source) {
+            self.id = id
+            self.source = source
+        }
+
+        /// Creates a video segment from raw bytes.
+        ///
+        /// - Parameters:
+        ///   - id: A unique identifier for this segment. Defaults to a generated UUID.
+        ///   - data: The encoded video bytes.
+        ///   - mimeType: The MIME type corresponding to the video data (for example, `video/mp4`).
+        public init(id: String = UUID().uuidString, data: Data, mimeType: String) {
+            self.id = id
+            self.source = .data(data, mimeType: mimeType)
+        }
+
+        /// Creates a video segment from a URL.
+        ///
+        /// - Parameters:
+        ///   - id: A unique identifier for this segment. Defaults to a generated UUID.
+        ///   - url: A URL that references a video.
+        public init(id: String = UUID().uuidString, url: URL) {
+            self.id = id
+            self.source = .url(url)
+        }
+    }
+
     /// Errors that can occur when converting platform images to encoded data.
     public enum ImageEncodingError: Error {
         /// The image couldn't be converted to the requested format.

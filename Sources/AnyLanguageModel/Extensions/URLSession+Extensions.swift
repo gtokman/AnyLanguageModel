@@ -297,6 +297,40 @@ extension URLSession {
     }
 #endif
 
+extension URLSession {
+    /// Polls a URL at a regular interval until a completion condition is met.
+    ///
+    /// - Parameters:
+    ///   - url: The URL to poll.
+    ///   - headers: HTTP headers to include in each poll request.
+    ///   - interval: The time in seconds between poll attempts.
+    ///   - timeout: The maximum time in seconds to wait before throwing an error.
+    ///   - isComplete: A closure that returns `true` when polling should stop.
+    /// - Returns: The decoded response from the final successful poll.
+    func poll<T: Decodable>(
+        url: URL,
+        headers: [String: String] = [:],
+        interval: TimeInterval = 10,
+        timeout: TimeInterval = 600,
+        isComplete: (T) -> Bool
+    ) async throws -> T {
+        let deadline = Date().addingTimeInterval(timeout)
+        while true {
+            let response: T = try await fetch(.get, url: url, headers: headers)
+            if isComplete(response) {
+                return response
+            }
+            if Date() >= deadline {
+                throw URLSessionError.httpError(
+                    statusCode: 408,
+                    detail: "Polling timed out after \(Int(timeout)) seconds"
+                )
+            }
+            try await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+        }
+    }
+}
+
 enum URLSessionError: Error, CustomStringConvertible {
     case invalidResponse
     case httpError(statusCode: Int, detail: String)

@@ -1338,6 +1338,119 @@ let result = try await nativeModel.generateImages(
 )
 ```
 
+### Video Generation
+
+Generate videos from text prompts using the `VideoGenerationModel` protocol.
+OpenAI (Sora), xAI (Grok), and Google Gemini (Veo) all offer video generation models.
+All three use an asynchronous pattern — a job is created, polled until complete,
+and then the video is downloaded:
+
+```swift
+let model = OpenAIVideoGenerationModel(
+    apiKey: ProcessInfo.processInfo.environment["OPENAI_API_KEY"]!,
+    model: "sora-2"
+)
+
+let result = try await model.generateVideo(
+    for: "A drone shot of a sunset over the ocean",
+    options: VideoGenerationOptions(aspectRatio: .landscape, durationSeconds: 8)
+)
+
+// Access the generated videos
+for video in result.videos {
+    switch video.source {
+    case .data(let data, let mimeType):
+        print("Generated \(mimeType) video: \(data.count) bytes")
+    case .url(let url):
+        print("Video URL: \(url)")
+    }
+}
+```
+
+Control generation with `VideoGenerationOptions`:
+
+```swift
+var options = VideoGenerationOptions(
+    aspectRatio: .landscape,  // .square, .landscape, .portrait
+    durationSeconds: 10
+)
+
+// Set provider-specific options
+options[custom: OpenAIVideoGenerationModel.self] = .init(
+    size: "1920x1080"
+)
+
+let result = try await model.generateVideo(for: "A timelapse of clouds", options: options)
+```
+
+Video generation support by provider:
+
+| Provider                    | Model Names                     | Aspect Ratios      | Custom Options                         |
+| --------------------------- | ------------------------------- | :----------------: | -------------------------------------- |
+| OpenAI (Sora)               | `sora-2`, `sora-2-pro`         | 1:1, 16:9, 9:16   | size, extraBody                        |
+| xAI (Grok)                  | `grok-imagine-video`            | 1:1, 16:9, 9:16   | resolution (480p, 720p), extraBody     |
+| Gemini (Veo)                | `veo-3.1-generate-preview`, etc | 1:1, 16:9, 9:16   | resolution, negativePrompt, personGeneration |
+
+#### OpenAI (Sora)
+
+```swift
+let model = OpenAIVideoGenerationModel(
+    apiKey: ProcessInfo.processInfo.environment["OPENAI_API_KEY"]!,
+    model: "sora-2"  // or "sora-2-pro"
+)
+
+var options = VideoGenerationOptions(aspectRatio: .landscape, durationSeconds: 10)
+options[custom: OpenAIVideoGenerationModel.self] = .init(
+    size: "1280x720",        // Explicit size (overrides aspect ratio)
+    pollInterval: 15          // Custom polling interval in seconds
+)
+
+let result = try await model.generateVideo(
+    for: "A cinematic sunrise over a mountain range",
+    options: options
+)
+```
+
+#### xAI (Grok)
+
+```swift
+let model = XAIVideoGenerationModel(
+    apiKey: ProcessInfo.processInfo.environment["XAI_API_KEY"]!,
+    model: "grok-imagine-video"
+)
+
+var options = VideoGenerationOptions(aspectRatio: .portrait, durationSeconds: 5)
+options[custom: XAIVideoGenerationModel.self] = .init(
+    resolution: ._720p  // ._480p, ._720p
+)
+
+let result = try await model.generateVideo(
+    for: "A cat playing with a ball of yarn",
+    options: options
+)
+```
+
+#### Gemini (Veo)
+
+```swift
+let model = GeminiVideoGenerationModel(
+    apiKey: ProcessInfo.processInfo.environment["GEMINI_API_KEY"]!,
+    model: "veo-3.1-generate-preview"  // or "veo-2.0-generate-001"
+)
+
+var options = VideoGenerationOptions(aspectRatio: .landscape, durationSeconds: 8)
+options[custom: GeminiVideoGenerationModel.self] = .init(
+    resolution: ._1080p,                    // ._720p, ._1080p, ._4k
+    negativePrompt: "blurry, low quality",  // What to exclude
+    personGeneration: .allowAdult           // .dontAllow, .allowAdult, .allowAll
+)
+
+let result = try await model.generateVideo(
+    for: "A timelapse of clouds moving over a mountain",
+    options: options
+)
+```
+
 ## Testing
 
 Run the test suite to verify everything works correctly:
