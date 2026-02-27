@@ -1227,8 +1227,7 @@ Configure aspect ratio, resolution, and output format through custom options:
 var options = ImageGenerationOptions()
 options[custom: GeminiNativeImageGenerationModel.self] = .init(
     aspectRatio: .widescreen,        // .square, .standard, .standardPortrait, .widescreen, .widescreenPortrait
-    imageSize: .hd,                  // .standard (1K), .hd (2K), .ultraHD (4K, gemini-3-pro only)
-    outputMimeType: .png             // .png, .jpeg
+    imageSize: .hd                   // .standard (1K), .hd (2K), .ultraHD (4K, gemini-3-pro only)
 )
 
 let result = try await nativeModel.generateImages(
@@ -1253,7 +1252,7 @@ let session = LanguageModelSession(model: model)
 
 var options = GenerationOptions()
 options[custom: GeminiLanguageModel.self] = .init(
-    imageGeneration: .init(aspectRatio: .widescreen, outputMimeType: .png)
+    imageGeneration: .init(aspectRatio: .widescreen)
 )
 
 let response = try await session.respond(
@@ -1301,8 +1300,7 @@ var options = GenerationOptions()
 options[custom: GeminiLanguageModel.self] = .init(
     imageGeneration: .init(
         aspectRatio: .widescreen,    // 1:1, 2:3, 3:2, 3:4, 4:3, 4:5, 5:4, 9:16, 16:9, 21:9
-        imageSize: .hd,              // .small (512px), .standard (1K), .hd (2K), .ultraHD (4K)
-        outputMimeType: .png         // .png, .jpeg
+        imageSize: .hd               // .small (512px), .standard (1K), .hd (2K), .ultraHD (4K)
     )
 )
 
@@ -1372,7 +1370,7 @@ Control generation with `VideoGenerationOptions`:
 ```swift
 var options = VideoGenerationOptions(
     aspectRatio: .landscape,  // .square, .landscape, .portrait
-    durationSeconds: 10
+    durationSeconds: 8        // Snapped to nearest valid value per provider
 )
 
 // Set provider-specific options
@@ -1385,11 +1383,11 @@ let result = try await model.generateVideo(for: "A timelapse of clouds", options
 
 Video generation support by provider:
 
-| Provider                    | Model Names                     | Aspect Ratios      | Custom Options                         |
-| --------------------------- | ------------------------------- | :----------------: | -------------------------------------- |
-| OpenAI (Sora)               | `sora-2`, `sora-2-pro`         | 1:1, 16:9, 9:16   | size, extraBody                        |
-| xAI (Grok)                  | `grok-imagine-video`            | 1:1, 16:9, 9:16   | resolution (480p, 720p), extraBody     |
-| Gemini (Veo)                | `veo-3.1-generate-preview`, etc | 1:1, 16:9, 9:16   | resolution, negativePrompt, personGeneration |
+| Provider                    | Model Names                     | Aspect Ratios      | Duration (seconds)   | Custom Options                         |
+| --------------------------- | ------------------------------- | :----------------: | :------------------: | -------------------------------------- |
+| OpenAI (Sora)               | `sora-2`, `sora-2-pro`         | 1:1, 16:9, 9:16   | 4, 8, 12             | size, extraBody                        |
+| xAI (Grok)                  | `grok-imagine-video`            | 1:1, 16:9, 9:16   | 1–15                 | resolution (480p, 720p), extraBody     |
+| Gemini (Veo)                | `veo-3.1-generate-preview`, etc | 16:9, 9:16         | 4, 6, 8              | resolution, negativePrompt, personGeneration |
 
 #### OpenAI (Sora)
 
@@ -1399,7 +1397,7 @@ let model = OpenAIVideoGenerationModel(
     model: "sora-2"  // or "sora-2-pro"
 )
 
-var options = VideoGenerationOptions(aspectRatio: .landscape, durationSeconds: 10)
+var options = VideoGenerationOptions(aspectRatio: .landscape, durationSeconds: 8)  // Valid: 4, 8, 12
 options[custom: OpenAIVideoGenerationModel.self] = .init(
     size: "1280x720",        // Explicit size (overrides aspect ratio)
     pollInterval: 15          // Custom polling interval in seconds

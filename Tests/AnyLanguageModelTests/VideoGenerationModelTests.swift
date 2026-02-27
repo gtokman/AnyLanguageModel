@@ -273,11 +273,11 @@ struct OpenAIVideoGenerationModelTests {
 
     @Test func requestBodyWithOptions() {
         let model = OpenAIVideoGenerationModel(apiKey: "test-key")
-        let options = VideoGenerationOptions(aspectRatio: .landscape, durationSeconds: 10)
+        let options = VideoGenerationOptions(aspectRatio: .landscape, durationSeconds: 8)
 
         let body = model.createRequestBody(prompt: "A drone shot", options: options)
 
-        #expect(body["seconds"] == .string("10"))
+        #expect(body["seconds"] == .string("8"))
         #expect(body["size"] == .string("1280x720"))
     }
 
@@ -301,6 +301,51 @@ struct OpenAIVideoGenerationModelTests {
             options: VideoGenerationOptions(aspectRatio: .portrait)
         )
         #expect(portraitBody["size"] == .string("720x1280"))
+    }
+
+    @Test func requestBodySnapsSecondsToNearestValid() {
+        let model = OpenAIVideoGenerationModel(apiKey: "test-key")
+
+        // 5 snaps to 4
+        let body5 = model.createRequestBody(
+            prompt: "test",
+            options: VideoGenerationOptions(durationSeconds: 5)
+        )
+        #expect(body5["seconds"] == .string("4"))
+
+        // 6 is equidistant from 4 and 8; snaps to 4
+        let body6 = model.createRequestBody(
+            prompt: "test",
+            options: VideoGenerationOptions(durationSeconds: 6)
+        )
+        #expect(body6["seconds"] == .string("4"))
+
+        // 10 snaps to 8
+        let body10 = model.createRequestBody(
+            prompt: "test",
+            options: VideoGenerationOptions(durationSeconds: 10)
+        )
+        #expect(body10["seconds"] == .string("8"))
+
+        // 11 snaps to 12
+        let body11 = model.createRequestBody(
+            prompt: "test",
+            options: VideoGenerationOptions(durationSeconds: 11)
+        )
+        #expect(body11["seconds"] == .string("12"))
+
+        // Exact values pass through
+        let body4 = model.createRequestBody(
+            prompt: "test",
+            options: VideoGenerationOptions(durationSeconds: 4)
+        )
+        #expect(body4["seconds"] == .string("4"))
+
+        let body12 = model.createRequestBody(
+            prompt: "test",
+            options: VideoGenerationOptions(durationSeconds: 12)
+        )
+        #expect(body12["seconds"] == .string("12"))
     }
 
     @Test func requestBodyWithCustomOptions() {

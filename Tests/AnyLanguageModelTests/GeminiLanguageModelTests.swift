@@ -346,7 +346,8 @@ struct GeminiLanguageModelUnitTests {
 
         #expect(imageConfig["aspectRatio"] == .string("16:9"))
         #expect(imageConfig["imageSize"] == .string("2K"))
-        #expect(imageConfig["outputMimeType"] == .string("image/png"))
+        // outputMimeType is not a valid field in imageConfig
+        #expect(imageConfig["outputMimeType"] == nil)
     }
 
     @Test func noImageConfigWhenNil() throws {

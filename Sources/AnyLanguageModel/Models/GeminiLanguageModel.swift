@@ -723,9 +723,6 @@ private func createGenerateContentParams<Content: Generable>(
         if let imageSize = imageGeneration.imageSize {
             imageConfig["imageSize"] = .string(imageSize.rawValue)
         }
-        if let outputMimeType = imageGeneration.outputMimeType {
-            imageConfig["outputMimeType"] = .string(outputMimeType.rawValue)
-        }
         if !imageConfig.isEmpty {
             generationConfig["imageConfig"] = .object(imageConfig)
         }

@@ -126,13 +126,13 @@ public struct XAIVideoGenerationModel: VideoGenerationModel {
             headers: headers,
             interval: pollInterval
         ) { (response: XAIVideoStatusResponse) in
-            response.status == "done" || response.status == "expired"
+            response.status == "done" || response.status == "expired" || response.video != nil
         }
 
-        guard statusResponse.status == "done" else {
+        guard statusResponse.status == "done" || statusResponse.video != nil else {
             throw URLSessionError.httpError(
                 statusCode: 500,
-                detail: "Video generation failed with status: \(statusResponse.status)"
+                detail: "Video generation failed with status: \(statusResponse.status ?? "unknown")"
             )
         }
 
@@ -195,7 +195,7 @@ private struct XAIVideoCreateResponse: Decodable, Sendable {
 }
 
 private struct XAIVideoStatusResponse: Decodable, Sendable {
-    let status: String
+    let status: String?
     let video: XAIVideoInfo?
 }
 

@@ -172,7 +172,7 @@ extension OpenAIVideoGenerationModel {
 
         // seconds is a string enum: "4", "8", or "12"
         if let durationSeconds = options.durationSeconds {
-            body["seconds"] = .string(String(durationSeconds))
+            body["seconds"] = .string(String(nearestSoraSeconds(durationSeconds)))
         }
 
         let customOptions = options[custom: OpenAIVideoGenerationModel.self]
@@ -191,6 +191,12 @@ extension OpenAIVideoGenerationModel {
         }
 
         return body
+    }
+
+    /// Snaps an arbitrary duration to the nearest Sora-supported value (4, 8, or 12).
+    private func nearestSoraSeconds(_ seconds: Int) -> Int {
+        let valid = [4, 8, 12]
+        return valid.min(by: { abs($0 - seconds) < abs($1 - seconds) })!
     }
 
     private func openAISizeString(_ aspectRatio: VideoGenerationOptions.AspectRatio) -> String {

@@ -261,10 +261,6 @@ extension GeminiNativeImageGenerationModel {
             imageConfig["imageSize"] = .string(imageSize.rawValue)
         }
 
-        if let outputMimeType = customOptions?.outputMimeType {
-            imageConfig["outputMimeType"] = .string(outputMimeType.rawValue)
-        }
-
         if !imageConfig.isEmpty {
             generationConfig["imageConfig"] = .object(imageConfig)
         }
