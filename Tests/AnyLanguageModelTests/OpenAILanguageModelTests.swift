@@ -558,6 +558,115 @@ struct OpenAILanguageModelTests {
                 .prompt(makePrompt()),
             ])
         }
+
+        @Test func imageURLIsPlainStringNotNestedObject() throws {
+            let imageData = Data([0x89, 0x50, 0x4E, 0x47]) // PNG header bytes
+            let b64 = imageData.base64EncodedString()
+            let dataURL = "data:image/png;base64,\(b64)"
+
+            let body = try OpenAILanguageModel._testCreateResponsesRequestBody(
+                model: model,
+                messages: [
+                    .prompt(Transcript.Prompt(segments: [
+                        .text(.init(content: "Describe this image")),
+                        .image(Transcript.ImageSegment(data: imageData, mimeType: "image/png")),
+                    ]))
+                ]
+            )
+
+            guard let input = inputArray(from: body) else {
+                Issue.record("Expected input array in body")
+                return
+            }
+
+            guard let message = firstObject(withType: "message", in: input),
+                case .array(let content)? = message["content"]
+            else {
+                Issue.record("Expected message with content array")
+                return
+            }
+
+            // Find the input_image block
+            var foundImage = false
+            for block in content {
+                guard case .object(let obj) = block,
+                    stringValue(obj["type"]) == "input_image"
+                else { continue }
+
+                // image_url must be a plain string, not a nested object
+                guard case .string(let url) = obj["image_url"] else {
+                    Issue.record("image_url should be a plain string, got: \(String(describing: obj["image_url"]))")
+                    return
+                }
+                #expect(url == dataURL)
+                foundImage = true
+            }
+            #expect(foundImage, "Expected to find an input_image block")
+        }
+
+        @Test func imageURLFromRemoteURL() throws {
+            let remoteURL = URL(string: "https://example.com/photo.jpg")!
+
+            let body = try OpenAILanguageModel._testCreateResponsesRequestBody(
+                model: model,
+                messages: [
+                    .prompt(Transcript.Prompt(segments: [
+                        .text(.init(content: "Describe this")),
+                        .image(Transcript.ImageSegment(url: remoteURL)),
+                    ]))
+                ]
+            )
+
+            guard let input = inputArray(from: body),
+                let message = firstObject(withType: "message", in: input),
+                case .array(let content)? = message["content"]
+            else {
+                Issue.record("Expected message with content array")
+                return
+            }
+
+            var foundImage = false
+            for block in content {
+                guard case .object(let obj) = block,
+                    stringValue(obj["type"]) == "input_image"
+                else { continue }
+
+                guard case .string(let url) = obj["image_url"] else {
+                    Issue.record("image_url should be a plain string")
+                    return
+                }
+                #expect(url == "https://example.com/photo.jpg")
+                foundImage = true
+            }
+            #expect(foundImage, "Expected to find an input_image block")
+        }
+
+        @Test func textOnlyPromptHasNoImageBlocks() throws {
+            let body = try OpenAILanguageModel._testCreateResponsesRequestBody(
+                model: model,
+                messages: [
+                    .prompt(Transcript.Prompt(segments: [
+                        .text(.init(content: "Hello world")),
+                    ]))
+                ]
+            )
+
+            guard let input = inputArray(from: body),
+                let message = firstObject(withType: "message", in: input),
+                case .array(let content)? = message["content"]
+            else {
+                Issue.record("Expected message with content array")
+                return
+            }
+
+            #expect(content.count == 1)
+            guard case .object(let obj) = content.first else {
+                Issue.record("Expected content block object")
+                return
+            }
+            #expect(stringValue(obj["type"]) == "input_text")
+            #expect(stringValue(obj["text"]) == "Hello world")
+        }
     }
 }
 

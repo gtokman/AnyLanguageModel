@@ -1405,10 +1405,9 @@ private enum Block: Hashable, Codable, Sendable {
         case .text(let text):
             return .object(["type": .string("text"), "text": .string(text)])
         case .imageURL(let url):
-            // Responses API uses input_image at top-level input, but inside messages we mirror block
             return .object([
                 "type": .string("input_image"),
-                "image_url": .object(["url": .string(url)]),
+                "image_url": .string(url),
             ])
         }
     }
@@ -1946,5 +1945,27 @@ private extension GenerationSchema {
         }
 
         return jsonSchemaValue
+    }
+}
+
+// MARK: - Test Helpers
+
+extension OpenAILanguageModel {
+    /// Creates a Responses API request body for testing purposes.
+    /// - Returns: The JSON request body that would be sent to the API.
+    internal static func _testCreateResponsesRequestBody(
+        model: String,
+        messages: [Transcript.Entry] = [],
+        options: GenerationOptions = GenerationOptions()
+    ) throws -> JSONValue {
+        let transcript = Transcript(entries: messages)
+        return try Responses.createRequestBody(
+            model: model,
+            messages: transcript.toOpenAIMessages(),
+            tools: nil,
+            generating: String.self,
+            options: options,
+            stream: false
+        )
     }
 }

@@ -491,16 +491,18 @@ if let revised = result.revisedPrompt {
 
 Image generation support varies by provider:
 
-| Provider               | Image Generation | Image Editing |
-| ---------------------- | :--------------: | :-----------: |
-| OpenAI (gpt-image-1)  | yes              | yes           |
-| OpenAI (dall-e-3)      | yes              | —             |
-| Open Responses         | yes              | yes           |
-| Gemini Imagen          | yes              | —             |
-| Gemini Native          | yes              | yes           |
-| Anthropic              | —                | —             |
-| Ollama                 | —                | —             |
-| Apple Foundation Models| —                | —             |
+| Provider               | Image Generation | Standalone Editing | Conversational Editing |
+| ---------------------- | :--------------: | :----------------: | :--------------------: |
+| OpenAI (gpt-image-1)  | yes              | yes                | —                      |
+| OpenAI (dall-e-3)      | yes              | —                  | —                      |
+| Open Responses         | yes              | —                  | yes                    |
+| Gemini Imagen          | yes              | —                  | —                      |
+| Gemini Native          | yes              | yes                | —                      |
+| Gemini (conversation)  | —                | —                  | yes                    |
+| xAI (grok-image-1)    | yes              | yes                | —                      |
+| Anthropic              | —                | —                  | —                      |
+| Ollama                 | —                | —                  | —                      |
+| Apple Foundation Models| —                | —                  | —                      |
 
 #### Image Editing
 
@@ -532,6 +534,86 @@ let result = try await model.generateImages(
     for: "Change the art style to watercolor",
     options: ImageGenerationOptions(inputImages: [sourceImage])
 )
+```
+
+```swift
+// xAI image editing (uses OpenAIImageGenerationModel with xAI base URL)
+let model = OpenAIImageGenerationModel(
+    baseURL: URL(string: "https://api.x.ai/v1/")!,
+    apiKey: ProcessInfo.processInfo.environment["XAI_API_KEY"]!,
+    model: "grok-image-1"
+)
+
+let sourceImage = Transcript.ImageSegment(data: imageData, mimeType: "image/png")
+let result = try await model.generateImages(
+    for: "Remove the background from this photo",
+    options: ImageGenerationOptions(inputImages: [sourceImage])
+)
+```
+
+#### Conversational Image Editing
+
+Image-capable language models can also edit images within a conversation,
+enabling multi-turn editing workflows. Pass images using `respond(to:images:options:)`
+and retrieve results from `response.generatedImages`:
+
+```swift
+// Gemini conversational image editing
+let model = GeminiLanguageModel(
+    apiKey: ProcessInfo.processInfo.environment["GEMINI_API_KEY"]!,
+    model: "gemini-2.5-flash-image"
+)
+let session = LanguageModelSession(model: model)
+
+var options = GenerationOptions()
+options[custom: GeminiLanguageModel.self] = .init(
+    imageGeneration: .init(outputMimeType: .png)
+)
+
+let response = try await session.respond(
+    to: "Remove the background from this photo",
+    images: [Transcript.ImageSegment(data: photoData, mimeType: "image/png")],
+    options: options
+)
+
+for image in response.generatedImages {
+    switch image.source {
+    case .data(let data, let mimeType):
+        print("Edited \(mimeType) image: \(data.count) bytes")
+    case .url(let url):
+        print("Image URL: \(url)")
+    }
+}
+```
+
+```swift
+// OpenAI conversational image editing (via Responses API)
+let model = OpenResponsesLanguageModel(
+    baseURL: URL(string: "https://api.openai.com/v1/")!,
+    apiKey: ProcessInfo.processInfo.environment["OPENAI_API_KEY"]!,
+    model: "gpt-4.1"
+)
+let session = LanguageModelSession(model: model)
+
+var options = GenerationOptions()
+options[custom: OpenResponsesLanguageModel.self] = .init(
+    imageGeneration: .init(quality: .high)
+)
+
+let response = try await session.respond(
+    to: "Make this photo look like a watercolor painting",
+    images: [Transcript.ImageSegment(data: photoData, mimeType: "image/png")],
+    options: options
+)
+
+for image in response.generatedImages {
+    switch image.source {
+    case .data(let data, let mimeType):
+        print("Edited \(mimeType) image: \(data.count) bytes")
+    case .url(let url):
+        print("Image URL: \(url)")
+    }
+}
 ```
 
 ## Providers
