@@ -1199,12 +1199,13 @@ let edited = try await session.respond(
 > [!NOTE]
 > Streaming (`streamResponse`) does not currently surface generated images.
 
-**Nano Banana (Gemini 2.5 Flash Image / Gemini 3 Pro Image)** —
+**Nano Banana (Gemini native image generation)** —
 Google's [Nano Banana](https://ai.google.dev/gemini-api/docs/image-generation)
 models generate and edit images natively within conversations.
-Use `gemini-2.5-flash-image` (Nano Banana) or `gemini-3-pro-image-preview`
-(Nano Banana Pro) with either the `GeminiLanguageModel` for multi-turn
-conversations or `GeminiNativeImageGenerationModel` for standalone generation:
+Use `gemini-2.5-flash-image` (Nano Banana), `gemini-3-pro-image-preview`
+(Nano Banana Pro), or `gemini-3.1-flash-image-preview` (Nano Banana 2)
+with either the `GeminiLanguageModel` for multi-turn conversations or
+`GeminiNativeImageGenerationModel` for standalone generation:
 
 ```swift
 // Multi-turn conversation with Nano Banana
@@ -1239,9 +1240,10 @@ let edited = try await session.respond(
 )
 ```
 
-Nano Banana Pro (`gemini-3-pro-image-preview`) supports 4K resolution
-and additional aspect ratios. Thought signatures are preserved automatically
-across turns so the model can reference and edit previous images.
+Nano Banana Pro (`gemini-3-pro-image-preview`) supports 4K resolution.
+Nano Banana 2 (`gemini-3.1-flash-image-preview`) is the latest Flash-based
+image model. Thought signatures are preserved automatically across turns
+so the model can reference and edit previous images.
 
 Native Gemini also supports image editing by passing `inputImages`:
 
