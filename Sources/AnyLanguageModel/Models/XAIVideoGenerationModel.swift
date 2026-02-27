@@ -9,7 +9,7 @@ import JSONSchema
 ///
 /// Use this model to generate videos using xAI's Grok video models.
 /// Video generation is asynchronous — a job is created, polled until
-/// complete, and then the video is downloaded from the returned URL.
+/// complete, and the video URL is returned.
 ///
 /// ```swift
 /// let model = XAIVideoGenerationModel(
@@ -138,25 +138,13 @@ public struct XAIVideoGenerationModel: VideoGenerationModel {
 
         var videos: [Transcript.VideoSegment] = []
 
+        // Return the video URL directly rather than downloading the full
+        // MP4 into memory — the URL is temporary so callers should
+        // download or stream it promptly.
         if let videoInfo = statusResponse.video, let urlString = videoInfo.url,
             let videoURL = URL(string: urlString)
         {
-            // Download the video from the returned URL
-            var request = URLRequest(url: videoURL)
-            request.httpMethod = "GET"
-
-            let (data, response) = try await urlSession.data(for: request)
-
-            guard let httpResponse = response as? HTTPURLResponse,
-                (200..<300).contains(httpResponse.statusCode)
-            else {
-                throw URLSessionError.httpError(
-                    statusCode: (response as? HTTPURLResponse)?.statusCode ?? 500,
-                    detail: "Failed to download video content"
-                )
-            }
-
-            videos.append(Transcript.VideoSegment(data: data, mimeType: "video/mp4"))
+            videos.append(Transcript.VideoSegment(url: videoURL))
         }
 
         return GeneratedVideo(videos: videos)

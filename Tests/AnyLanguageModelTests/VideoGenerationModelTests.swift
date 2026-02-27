@@ -277,7 +277,7 @@ struct OpenAIVideoGenerationModelTests {
 
         let body = model.createRequestBody(prompt: "A drone shot", options: options)
 
-        #expect(body["seconds"] == .int(10))
+        #expect(body["seconds"] == .string("10"))
         #expect(body["size"] == .string("1280x720"))
     }
 
@@ -349,14 +349,14 @@ struct OpenAIVideoGenerationModelTests {
         var options = VideoGenerationOptions(durationSeconds: 5)
         options[custom: OpenAIVideoGenerationModel.self] = .init(
             extraBody: [
-                "seconds": .int(15)
+                "seconds": .string("15")
             ]
         )
 
         let body = model.createRequestBody(prompt: "test", options: options)
 
         // extraBody should override the standard duration
-        #expect(body["seconds"] == .int(15))
+        #expect(body["seconds"] == .string("15"))
     }
 
     @Test func customOptionsEquality() {
@@ -573,7 +573,7 @@ struct GeminiVideoGenerationModelTests {
 
         if case .object(let parameters) = body["parameters"] {
             #expect(parameters["aspectRatio"] == .string("16:9"))
-            #expect(parameters["durationSeconds"] == .int(8))
+            #expect(parameters["durationSeconds"] == .string("8"))
         } else {
             Issue.record("Expected parameters object")
         }
@@ -582,12 +582,13 @@ struct GeminiVideoGenerationModelTests {
     @Test func requestBodyAspectRatioMapping() {
         let model = GeminiVideoGenerationModel(apiKey: "test-key")
 
+        // Veo only supports "16:9" and "9:16", so .square falls back to "16:9"
         let squareBody = model.createRequestBody(
             prompt: "test",
             options: VideoGenerationOptions(aspectRatio: .square)
         )
         if case .object(let params) = squareBody["parameters"] {
-            #expect(params["aspectRatio"] == .string("1:1"))
+            #expect(params["aspectRatio"] == .string("16:9"))
         }
 
         let landscapeBody = model.createRequestBody(
@@ -626,7 +627,7 @@ struct GeminiVideoGenerationModelTests {
 
         if case .object(let params) = body["parameters"] {
             #expect(params["resolution"] == .string("1080p"))
-            #expect(params["personGeneration"] == .string("ALLOW_ADULT"))
+            #expect(params["personGeneration"] == .string("allow_adult"))
         } else {
             Issue.record("Expected parameters object")
         }
@@ -650,9 +651,9 @@ struct GeminiVideoGenerationModelTests {
 
     @Test func personGenerationRawValues() {
         typealias PG = GeminiVideoGenerationModel.CustomVideoGenerationOptions.PersonGeneration
-        #expect(PG.dontAllow.rawValue == "DONT_ALLOW")
-        #expect(PG.allowAdult.rawValue == "ALLOW_ADULT")
-        #expect(PG.allowAll.rawValue == "ALLOW_ALL")
+        #expect(PG.dontAllow.rawValue == "dont_allow")
+        #expect(PG.allowAdult.rawValue == "allow_adult")
+        #expect(PG.allowAll.rawValue == "allow_all")
     }
 
     @Test func customOptionsEquality() {

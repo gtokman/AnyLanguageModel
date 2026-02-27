@@ -53,9 +53,9 @@ public struct GeminiVideoGenerationModel: VideoGenerationModel {
 
         /// Person generation settings.
         public enum PersonGeneration: String, Sendable, Equatable {
-            case dontAllow = "DONT_ALLOW"
-            case allowAdult = "ALLOW_ADULT"
-            case allowAll = "ALLOW_ALL"
+            case dontAllow = "dont_allow"
+            case allowAdult = "allow_adult"
+            case allowAll = "allow_all"
         }
 
         /// Creates custom video generation options for Gemini Veo.
@@ -160,15 +160,12 @@ public struct GeminiVideoGenerationModel: VideoGenerationModel {
 
         var videos: [Transcript.VideoSegment] = []
 
-        if let response = operationResponse.response,
-            let generatedVideos = response.generatedVideos
+        if let videoResponse = operationResponse.response,
+            let generateVideoResponse = videoResponse.generateVideoResponse,
+            let generatedSamples = generateVideoResponse.generatedSamples
         {
-            for generatedVideo in generatedVideos {
-                if let videoBytes = generatedVideo.video?.videoBytes,
-                    let data = Data(base64Encoded: videoBytes)
-                {
-                    videos.append(Transcript.VideoSegment(data: data, mimeType: "video/mp4"))
-                } else if let uri = generatedVideo.video?.uri, let videoURL = URL(string: uri) {
+            for sample in generatedSamples {
+                if let uri = sample.video?.uri, let videoURL = URL(string: uri) {
                     videos.append(Transcript.VideoSegment(url: videoURL))
                 }
             }
@@ -198,11 +195,21 @@ extension GeminiVideoGenerationModel {
         var parameters: [String: JSONValue] = [:]
 
         if let aspectRatio = options.aspectRatio {
-            parameters["aspectRatio"] = .string(aspectRatio.rawValue)
+            // Veo supports "16:9" (default) and "9:16" only.
+            // Map .square to "16:9" as a fallback since "1:1" is not supported.
+            switch aspectRatio {
+            case .landscape:
+                parameters["aspectRatio"] = .string("16:9")
+            case .portrait:
+                parameters["aspectRatio"] = .string("9:16")
+            case .square:
+                parameters["aspectRatio"] = .string("16:9")
+            }
         }
 
+        // durationSeconds is a string enum: "4", "6", or "8"
         if let durationSeconds = options.durationSeconds {
-            parameters["durationSeconds"] = .int(durationSeconds)
+            parameters["durationSeconds"] = .string(String(durationSeconds))
         }
 
         if let resolution = customOptions?.resolution {
@@ -230,18 +237,21 @@ extension GeminiVideoGenerationModel {
 private struct GeminiOperationResponse: Decodable, Sendable {
     let name: String
     let done: Bool?
-    let response: GeminiVideoResponse?
+    let response: GeminiOperationResult?
 }
 
-private struct GeminiVideoResponse: Decodable, Sendable {
-    let generatedVideos: [GeminiGeneratedVideo]?
+private struct GeminiOperationResult: Decodable, Sendable {
+    let generateVideoResponse: GeminiGenerateVideoResponse?
 }
 
-private struct GeminiGeneratedVideo: Decodable, Sendable {
+private struct GeminiGenerateVideoResponse: Decodable, Sendable {
+    let generatedSamples: [GeminiGeneratedSample]?
+}
+
+private struct GeminiGeneratedSample: Decodable, Sendable {
     let video: GeminiVideoData?
 }
 
 private struct GeminiVideoData: Decodable, Sendable {
-    let videoBytes: String?
     let uri: String?
 }

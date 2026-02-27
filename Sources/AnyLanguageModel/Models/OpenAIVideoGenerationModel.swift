@@ -31,6 +31,9 @@ public struct OpenAIVideoGenerationModel: VideoGenerationModel {
     /// Custom video generation options specific to OpenAI Sora.
     public struct CustomVideoGenerationOptions: AnyLanguageModel.CustomVideoGenerationOptions {
         /// The size of the generated video (for example, `"1280x720"`).
+        ///
+        /// Supported sizes: `480x480`, `720x720`, `1080x1080`,
+        /// `720x1280`, `1280x720`, `1080x1920`, `1920x1080`.
         public var size: String?
 
         /// The polling interval in seconds.
@@ -111,7 +114,7 @@ public struct OpenAIVideoGenerationModel: VideoGenerationModel {
 
         let videoId = createResponse.id
         let customOptions = options[custom: OpenAIVideoGenerationModel.self]
-        let pollInterval = customOptions?.pollInterval ?? 10
+        let pollInterval = customOptions?.pollInterval ?? 20
 
         // Poll until complete
         let pollURL = baseURL.appendingPathComponent("videos/\(videoId)")
@@ -167,8 +170,9 @@ extension OpenAIVideoGenerationModel {
             "prompt": .string(prompt),
         ]
 
+        // seconds is a string enum: "4", "8", or "12"
         if let durationSeconds = options.durationSeconds {
-            body["seconds"] = .int(durationSeconds)
+            body["seconds"] = .string(String(durationSeconds))
         }
 
         let customOptions = options[custom: OpenAIVideoGenerationModel.self]
