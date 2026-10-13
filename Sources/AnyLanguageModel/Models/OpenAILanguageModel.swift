@@ -1370,14 +1370,10 @@ extension Transcript {
             case .toolCalls(let toolCalls):
                 // Add assistant message with tool calls
                 let openAIToolCalls: [JSONValue] = toolCalls.map { call in
-                    let argumentsJSON: String
-                    if let data = try? JSONEncoder().encode(call.arguments),
-                        let jsonString = String(data: data, encoding: .utf8)
-                    {
-                        argumentsJSON = jsonString
-                    } else {
-                        argumentsJSON = "{}"
-                    }
+                    // The arguments' JSON, as the model wrote it. `GeneratedContent`'s own
+                    // `Codable` form (`{"kind":…}`) isn't the tool's schema, and models that
+                    // see it in the history copy it into their next calls.
+                    let argumentsJSON = call.arguments.jsonString
 
                     return .object([
                         "id": .string(call.id),
