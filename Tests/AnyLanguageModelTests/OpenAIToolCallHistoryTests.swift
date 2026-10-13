@@ -74,6 +74,93 @@ import Testing
             )
             #expect(decoded == ["city": "Paris"])
         }
+
+        private let toolCallArguments = #"{\"unit\": \"celsius\", \"city\": \"Paris\"}"#
+
+        private func completion(_ text: String) -> String {
+            """
+            {"id": "c", "object": "chat.completion", "created": 0, "model": "test",
+             "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": "\(text)"}}]}
+            """
+        }
+
+        private var toolCallCompletion: String {
+            """
+            {"id": "c", "object": "chat.completion", "created": 0, "model": "test",
+             "choices": [{"index": 0, "finish_reason": "tool_calls", "message": {"role": "assistant", "content": null,
+               "tool_calls": [{"id": "call-1", "type": "function",
+                               "function": {"name": "getWeather", "arguments": "\(toolCallArguments)"}}]}}]}
+            """
+        }
+
+        private func chunk(_ delta: String, finish: String = "null") -> String {
+            #"data: {"id": "c", "object": "chat.completion.chunk", "created": 0, "model": "test", "choices": [{"index": 0, "delta": \#(delta), "finish_reason": \#(finish)}]}"#
+                + "\n\n"
+        }
+
+        private var toolCallStream: String {
+            chunk(
+                #"{"role": "assistant", "tool_calls": [{"index": 0, "id": "call-1", "type": "function", "function": {"name": "getWeather", "arguments": "\#(toolCallArguments)"}}]}"#
+            ) + chunk("{}", finish: #""tool_calls""#) + "data: [DONE]\n\n"
+        }
+
+        private func textStream(_ text: String) -> String {
+            chunk(#"{"role": "assistant", "content": "\#(text)"}"#) + chunk("{}", finish: #""stop""#)
+                + "data: [DONE]\n\n"
+        }
+
+        /// The assistant message carrying the tool call, as sent in a request body.
+        private func toolCallMessage(in body: Data) throws -> [String: Any] {
+            let json = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+            let messages = try #require(json["messages"] as? [[String: Any]])
+            return try #require(messages.first { $0["tool_calls"] != nil })
+        }
+
+        @Test(arguments: [false, true])
+        func toolCallMessageIsTheSameInFlightAndInHistory(streaming: Bool) async throws {
+            ToolCallHistoryURLProtocol.reset(
+                responses: streaming
+                    ? [toolCallStream, textStream("Sunny."), textStream("Done.")]
+                    : [toolCallCompletion, completion("Sunny."), completion("Done.")]
+            )
+            let model = OpenAILanguageModel(
+                apiKey: "test",
+                model: "test",
+                session: ToolCallHistoryURLProtocol.makeSession()
+            )
+            let session = LanguageModelSession(model: model, tools: [ReorderedWeatherTool()])
+            if streaming {
+                for try await _ in session.streamResponse(to: "Weather in Paris?") {}
+                for try await _ in session.streamResponse(to: "And tomorrow?") {}
+            } else {
+                _ = try await session.respond(to: "Weather in Paris?")
+                _ = try await session.respond(to: "And tomorrow?")
+            }
+
+            // Request 2 continues the first turn after the tool ran; request 3 starts the next
+            // turn from the transcript. A provider's prompt cache only matches an identical
+            // prefix, so the tool call must be sent the same way both times.
+            let bodies = ToolCallHistoryURLProtocol.recordedBodies
+            try #require(bodies.count == 3)
+            let inFlight = try toolCallMessage(in: bodies[1])
+            let replayed = try toolCallMessage(in: bodies[2])
+            #expect(NSDictionary(dictionary: inFlight).isEqual(to: replayed))
+        }
+    }
+
+    /// Writes its arguments in the opposite order from its schema, like models often do, so
+    /// the raw arguments and the decoded-and-re-encoded ones differ.
+    private struct ReorderedWeatherTool: Tool {
+        let name = "getWeather"
+        let description = "Weather for a city"
+
+        @Generable
+        struct Arguments {
+            var city: String
+            var unit: String
+        }
+
+        func call(arguments: Arguments) async throws -> String { "Sunny" }
     }
 
     /// A `URLProtocol` with its own queue of JSON responses,
@@ -119,7 +206,7 @@ import Testing
                 url: url,
                 statusCode: 200,
                 httpVersion: "HTTP/1.1",
-                headerFields: ["Content-Type": "application/json"]
+                headerFields: ["Content-Type": next.hasPrefix("data:") ? "text/event-stream" : "application/json"]
             )!
             client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
             client?.urlProtocol(self, didLoad: Data(next.utf8))
