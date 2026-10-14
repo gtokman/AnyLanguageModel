@@ -202,6 +202,63 @@ import Testing
             }
         }
 
+        /// A round with text before its tool call: "Checking." then the call.
+        private var textAndToolCallCompletion: String {
+            """
+            {"id": "c", "object": "chat.completion", "created": 0, "model": "test",
+             "choices": [{"index": 0, "finish_reason": "tool_calls", "message": {"role": "assistant", "content": "Checking.",
+               "tool_calls": [{"id": "call-1", "type": "function",
+                               "function": {"name": "getWeather", "arguments": "\(toolCallArguments)"}}]}}]}
+            """
+        }
+
+        private var textAndToolCallStream: String {
+            chunk(#"{"role": "assistant", "content": "Checking."}"#)
+                + chunk(
+                    #"{"tool_calls": [{"index": 0, "id": "call-1", "type": "function", "function": {"name": "getWeather", "arguments": "\#(toolCallArguments)"}}]}"#
+                ) + chunk("{}", finish: #""tool_calls""#) + "data: [DONE]\n\n"
+        }
+
+        @Test(arguments: [false, true])
+        func aResponseWithTextBeforeItsToolCallsReplaysAsSent(streaming: Bool) async throws {
+            ToolCallHistoryURLProtocol.reset(
+                responses: streaming
+                    ? [textAndToolCallStream, textStream("Sunny."), textStream("Done.")]
+                    : [textAndToolCallCompletion, completion("Sunny."), completion("Done.")]
+            )
+            let model = OpenAILanguageModel(
+                apiKey: "test",
+                model: "test",
+                session: ToolCallHistoryURLProtocol.makeSession()
+            )
+            let session = LanguageModelSession(model: model, tools: [ReorderedWeatherTool()])
+            var reply = ""
+            if streaming {
+                for try await snapshot in session.streamResponse(to: "Weather in Paris?") { reply = snapshot.content }
+                for try await _ in session.streamResponse(to: "And tomorrow?") {}
+            } else {
+                reply = try await session.respond(to: "Weather in Paris?").content
+                _ = try await session.respond(to: "And tomorrow?")
+            }
+
+            // The reply still reads as a whole.
+            #expect(reply == "Checking.Sunny.")
+            let bodies = ToolCallHistoryURLProtocol.recordedBodies
+            try #require(bodies.count == 3)
+            // Request 2 continued the first response; request 3 replays it from the transcript.
+            // For a prompt cache to match, request 2's messages must start request 3's.
+            let inFlight = try messages(in: bodies[1])
+            let replayed = try messages(in: bodies[2])
+            try #require(replayed.count >= inFlight.count)
+            for (sent, again) in zip(inFlight, replayed) {
+                #expect(NSDictionary(dictionary: sent).isEqual(to: again))
+            }
+            // Then the response's last round, without the round before it again.
+            let finalText = String(describing: replayed[inFlight.count]["content"] ?? "")
+            #expect(finalText.contains("Sunny."))
+            #expect(!finalText.contains("Checking."))
+        }
+
         /// Takes `delay` to answer, with the city it was asked about.
         struct SlowCityTool: Tool {
             let name = "slowCity"

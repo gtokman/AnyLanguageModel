@@ -569,6 +569,11 @@ public struct OpenAILanguageModel: LanguageModel {
                     )
                 case .invocations(let invocations):
                     if !invocations.isEmpty {
+                        // The round's text, where it was written: a later response replays
+                        // it with the tool calls, as this one sends it.
+                        if let text = toolCallMessage.content, !text.isEmpty {
+                            entries.append(.response(Transcript.Response(assetIDs: [], segments: [.text(.init(content: text))])))
+                        }
                         entries.append(.toolCalls(Transcript.ToolCalls(invocations.map { $0.call })))
                         inFlightMessages.append(
                             toolCallsMessage(
@@ -905,6 +910,13 @@ public struct OpenAILanguageModel: LanguageModel {
                             guard !invocations.isEmpty else {
                                 continuation.finish()
                                 return
+                            }
+                            if apiVariant == .chatCompletions, !state.text.isEmpty {
+                                // The round's text, where it was written: a later response
+                                // replays it with the tool calls, as this one sends it.
+                                state.entries.append(.response(Transcript.Response(
+                                    assetIDs: [], segments: [.text(.init(content: state.text))]
+                                )))
                             }
                             state.entries.append(.toolCalls(Transcript.ToolCalls(invocations.map(\.call))))
                             if apiVariant == .chatCompletions {
@@ -1424,7 +1436,8 @@ private func stableJSON(_ content: GeneratedContent) -> String {
 extension Transcript {
     fileprivate func toOpenAIMessages() -> [OpenAIMessage] {
         var messages = [OpenAIMessage]()
-        for item in self {
+        let entries = Array(self)
+        for (index, item) in entries.enumerated() {
             switch item {
             case .instructions(let instructions):
                 messages.append(
@@ -1444,6 +1457,9 @@ extension Transcript {
                 // Keep display history in the transcript without sending unsupported replay state.
                 continue
             case .response(let response):
+                // A tool round's text goes out with its tool calls, in one message, as the
+                // response sent it.
+                if index + 1 < entries.count, case .toolCalls = entries[index + 1] { continue }
                 messages.append(
                     .init(
                         role: .assistant,
@@ -1451,7 +1467,14 @@ extension Transcript {
                     )
                 )
             case .toolCalls(let toolCalls):
-                messages.append(toolCallsMessage(toolCalls, text: nil))
+                var text: String?
+                if index > 0, case .response(let response) = entries[index - 1] {
+                    text = response.segments.compactMap { segment in
+                        if case .text(let text) = segment { return text.content }
+                        return nil
+                    }.joined()
+                }
+                messages.append(toolCallsMessage(toolCalls, text: text))
             case .toolOutput(let toolOutput):
                 messages.append(
                     .init(

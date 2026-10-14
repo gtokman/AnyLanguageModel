@@ -155,6 +155,24 @@ public final class LanguageModelSession: @unchecked Sendable {
         }
     }
 
+    /// The part of a response's text that its transcript entries don't already hold.
+    ///
+    /// A provider can record the text of each tool round as a response entry before the
+    /// round's tool calls, so the transcript replays the response as it was sent. The text of
+    /// a string response covers every round, so the final response entry keeps only what
+    /// follows those rounds, and the transcript doesn't hold the earlier text twice.
+    static func text(_ text: String, after entries: some Collection<Transcript.Entry>) -> String {
+        let earlier = entries.compactMap { entry -> String? in
+            guard case .response(let response) = entry else { return nil }
+            return response.segments.compactMap { segment in
+                if case .text(let text) = segment { return text.content }
+                return nil
+            }.joined()
+        }.joined()
+        guard !earlier.isEmpty, text.hasPrefix(earlier) else { return text }
+        return String(text.dropFirst(earlier.count))
+    }
+
     /// Returns the transcript, instructions, and tools for the next model request.
     ///
     /// Calling this method doesn't change the session.
@@ -466,7 +484,7 @@ public final class LanguageModelSession: @unchecked Sendable {
                         let responseEntry = Transcript.Entry.response(
                             Transcript.Response(
                                 assetIDs: [],
-                                segments: [.text(.init(content: textContent))],
+                                segments: [.text(.init(content: Self.text(textContent, after: lastSnapshot.transcriptEntries)))],
                                 providerMetadata: lastSnapshot.providerMetadata
                             )
                         )
@@ -752,7 +770,7 @@ public final class LanguageModelSession: @unchecked Sendable {
             let responseEntry = Transcript.Entry.response(
                 Transcript.Response(
                     assetIDs: [],
-                    segments: [.text(.init(content: textContent))],
+                    segments: [.text(.init(content: Self.text(textContent, after: response.transcriptEntries)))],
                     providerMetadata: response.providerMetadata
                 )
             )
@@ -1161,7 +1179,7 @@ extension LanguageModelSession {
             let responseEntry = Transcript.Entry.response(
                 Transcript.Response(
                     assetIDs: [],
-                    segments: [.text(.init(content: textContent))],
+                    segments: [.text(.init(content: Self.text(textContent, after: response.transcriptEntries)))],
                     providerMetadata: response.providerMetadata
                 )
             )
