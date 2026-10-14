@@ -202,6 +202,52 @@ import Testing
             }
         }
 
+        /// Takes `delay` to answer, with the city it was asked about.
+        struct SlowCityTool: Tool {
+            let name = "slowCity"
+            let description = "Answers slowly"
+
+            @Generable
+            struct Arguments {
+                var city: String
+            }
+
+            func call(arguments: Arguments) async throws -> String {
+                try await Task.sleep(for: .milliseconds(300))
+                return "Weather in \(arguments.city)"
+            }
+        }
+
+        @Test func toolCallsInARoundRunAtOnceAndKeepTheirOrder() async throws {
+            let twoCalls = """
+                {"id": "c", "object": "chat.completion", "created": 0, "model": "test",
+                 "choices": [{"index": 0, "finish_reason": "tool_calls", "message": {"role": "assistant", "content": null,
+                   "tool_calls": [
+                     {"id": "call-1", "type": "function", "function": {"name": "slowCity", "arguments": "{\\"city\\": \\"Paris\\"}"}},
+                     {"id": "call-2", "type": "function", "function": {"name": "slowCity", "arguments": "{\\"city\\": \\"Oslo\\"}"}}]}}]}
+                """
+            ToolCallHistoryURLProtocol.reset(responses: [twoCalls, completion("Done.")])
+            let model = OpenAILanguageModel(
+                apiKey: "test",
+                model: "test",
+                session: ToolCallHistoryURLProtocol.makeSession()
+            )
+            let session = LanguageModelSession(model: model, tools: [SlowCityTool()])
+            let start = ContinuousClock.now
+            _ = try await session.respond(to: "Weather in Paris and Oslo?")
+            let elapsed = ContinuousClock.now - start
+
+            // Two 300 ms calls one after the other would take 600 ms.
+            #expect(elapsed < .milliseconds(550))
+            let bodies = ToolCallHistoryURLProtocol.recordedBodies
+            try #require(bodies.count == 2)
+            let toolMessages = try messages(in: bodies[1]).filter { $0["role"] as? String == "tool" }
+            let ids = toolMessages.compactMap { $0["tool_call_id"] as? String }
+            #expect(ids == ["call-1", "call-2"])
+            let firstOutput = toolMessages.first.map { String(describing: $0["content"] ?? "") } ?? ""
+            #expect(firstOutput.contains("Paris"))
+        }
+
         @Test func reasoningIsSentBackWithTheToolRound() async throws {
             let toolCallWithReasoning = """
                 {"id": "c", "object": "chat.completion", "created": 0, "model": "test",
