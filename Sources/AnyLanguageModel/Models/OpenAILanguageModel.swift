@@ -571,7 +571,11 @@ public struct OpenAILanguageModel: LanguageModel {
                     if !invocations.isEmpty {
                         entries.append(.toolCalls(Transcript.ToolCalls(invocations.map { $0.call })))
                         inFlightMessages.append(
-                            toolCallsMessage(invocations.map(\.call), text: toolCallMessage.content)
+                            toolCallsMessage(
+                                invocations.map(\.call),
+                                text: toolCallMessage.content,
+                                reasoning: toolCallMessage.reasoningFields
+                            )
                         )
                         for invocation in invocations {
                             let output = invocation.output
@@ -1069,12 +1073,31 @@ private enum ChatCompletions {
             let content: String?
             let refusal: String?
             let toolCalls: [OpenAIToolCall]?
+            /// The model's thinking, in whichever fields the provider uses: `reasoning_content`
+            /// (DeepSeek), or `reasoning` and `reasoning_details` (OpenRouter, Vercel AI Gateway).
+            let reasoning: String?
+            let reasoningContent: String?
+            let reasoningDetails: JSONValue?
 
             private enum CodingKeys: String, CodingKey {
                 case role
                 case content
                 case refusal
                 case toolCalls = "tool_calls"
+                case reasoning
+                case reasoningContent = "reasoning_content"
+                case reasoningDetails = "reasoning_details"
+            }
+
+            /// The reasoning fields as received, to send back with the tool round. Thinking
+            /// models such as DeepSeek's require it in the rest of the response's requests, and
+            /// without it a model loses its plan between rounds.
+            var reasoningFields: [String: JSONValue] {
+                var fields: [String: JSONValue] = [:]
+                if let reasoning { fields[CodingKeys.reasoning.rawValue] = .string(reasoning) }
+                if let reasoningContent { fields[CodingKeys.reasoningContent.rawValue] = .string(reasoningContent) }
+                if let reasoningDetails { fields[CodingKeys.reasoningDetails.rawValue] = reasoningDetails }
+                return fields
             }
         }
     }
@@ -1337,7 +1360,14 @@ private enum Responses {
 ///
 /// `text` is what the model wrote before calling the tools in this round; the transcript
 /// keeps it in the final response instead, so replayed rounds pass `nil`.
-private func toolCallsMessage(_ calls: some Sequence<Transcript.ToolCall>, text: String?) -> OpenAIMessage {
+///
+/// `reasoning` is sent back as received, within the response that produced it. It isn't kept
+/// in the transcript, so later responses replay the round without it.
+private func toolCallsMessage(
+    _ calls: some Sequence<Transcript.ToolCall>,
+    text: String?,
+    reasoning: [String: JSONValue] = [:]
+) -> OpenAIMessage {
     let toolCalls: [JSONValue] = calls.map { call in
         .object([
             "id": .string(call.id),
@@ -1348,12 +1378,13 @@ private func toolCallsMessage(_ calls: some Sequence<Transcript.ToolCall>, text:
             ]),
         ])
     }
-    let message: JSONValue = .object([
+    var message: [String: JSONValue] = [
         "role": .string("assistant"),
         "content": text.map { $0.isEmpty ? .null : .string($0) } ?? .null,
         "tool_calls": .array(toolCalls),
-    ])
-    return OpenAIMessage(role: .raw(rawContent: message), content: .text(""))
+    ]
+    message.merge(reasoning) { current, _ in current }
+    return OpenAIMessage(role: .raw(rawContent: .object(message)), content: .text(""))
 }
 
 /// The content's JSON with its keys sorted, so the same arguments are always the same bytes.

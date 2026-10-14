@@ -146,6 +146,32 @@ import Testing
             let replayed = try toolCallMessage(in: bodies[2])
             #expect(NSDictionary(dictionary: inFlight).isEqual(to: replayed))
         }
+
+        @Test func reasoningIsSentBackWithTheToolRound() async throws {
+            let toolCallWithReasoning = """
+                {"id": "c", "object": "chat.completion", "created": 0, "model": "test",
+                 "choices": [{"index": 0, "finish_reason": "tool_calls", "message": {"role": "assistant", "content": null,
+                   "reasoning": "Check the weather first.",
+                   "reasoning_details": [{"type": "reasoning.text", "text": "Check the weather first."}],
+                   "tool_calls": [{"id": "call-1", "type": "function",
+                                   "function": {"name": "getWeather", "arguments": "\(toolCallArguments)"}}]}}]}
+                """
+            ToolCallHistoryURLProtocol.reset(responses: [toolCallWithReasoning, completion("Sunny.")])
+            let model = OpenAILanguageModel(
+                apiKey: "test",
+                model: "test",
+                session: ToolCallHistoryURLProtocol.makeSession()
+            )
+            let session = LanguageModelSession(model: model, tools: [ReorderedWeatherTool()])
+            _ = try await session.respond(to: "Weather in Paris?")
+
+            let bodies = ToolCallHistoryURLProtocol.recordedBodies
+            try #require(bodies.count == 2)
+            let message = try toolCallMessage(in: bodies[1])
+            #expect(message["reasoning"] as? String == "Check the weather first.")
+            let details = try #require(message["reasoning_details"] as? [[String: String]])
+            #expect(details == [["type": "reasoning.text", "text": "Check the weather first."]])
+        }
     }
 
     /// Writes its arguments in the opposite order from its schema, like models often do, so
