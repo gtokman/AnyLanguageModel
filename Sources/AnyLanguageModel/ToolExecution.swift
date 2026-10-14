@@ -62,6 +62,18 @@ public protocol ToolExecutionDelegate: Sendable {
         error: any Error,
         in session: LanguageModelSession
     ) async
+
+    /// Asks the delegate for user messages to add to a response in progress,
+    /// after a round of tool calls and before the model's next request.
+    ///
+    /// Use this to let someone steer a long response while it runs:
+    /// return what they've sent since the last round, and the model reads it
+    /// alongside the tool results. The messages are added to the transcript
+    /// as prompts, in order, after the round's tool outputs.
+    ///
+    /// - Parameter session: The session generating the response.
+    /// - Returns: The messages to add, oldest first; empty for none.
+    func pendingMessages(in session: LanguageModelSession) async -> [String]
 }
 
 // MARK: - Default Implementations
@@ -91,4 +103,7 @@ extension ToolExecutionDelegate {
         error: any Error,
         in session: LanguageModelSession
     ) async {}
+
+    /// Provides a default implementation that adds no messages.
+    public func pendingMessages(in session: LanguageModelSession) async -> [String] { [] }
 }

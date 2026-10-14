@@ -147,6 +147,61 @@ import Testing
             #expect(NSDictionary(dictionary: inFlight).isEqual(to: replayed))
         }
 
+        /// Hands over one message, once: someone steering the response while a tool runs.
+        private final class SteeringDelegate: ToolExecutionDelegate, @unchecked Sendable {
+            private var pending = ["Skip the umbrella advice."]
+
+            func pendingMessages(in session: LanguageModelSession) async -> [String] {
+                defer { pending = [] }
+                return pending
+            }
+        }
+
+        /// The messages of a request body, as dictionaries.
+        private func messages(in body: Data) throws -> [[String: Any]] {
+            let json = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+            return try #require(json["messages"] as? [[String: Any]])
+        }
+
+        @Test(arguments: [false, true])
+        func pendingMessagesJoinTheResponseAfterTheToolRound(streaming: Bool) async throws {
+            ToolCallHistoryURLProtocol.reset(
+                responses: streaming
+                    ? [toolCallStream, textStream("Sunny."), textStream("Done.")]
+                    : [toolCallCompletion, completion("Sunny."), completion("Done.")]
+            )
+            let model = OpenAILanguageModel(
+                apiKey: "test",
+                model: "test",
+                session: ToolCallHistoryURLProtocol.makeSession()
+            )
+            let session = LanguageModelSession(model: model, tools: [ReorderedWeatherTool()])
+            session.toolExecutionDelegate = SteeringDelegate()
+            if streaming {
+                for try await _ in session.streamResponse(to: "Weather in Paris?") {}
+                for try await _ in session.streamResponse(to: "And tomorrow?") {}
+            } else {
+                _ = try await session.respond(to: "Weather in Paris?")
+                _ = try await session.respond(to: "And tomorrow?")
+            }
+
+            let bodies = ToolCallHistoryURLProtocol.recordedBodies
+            try #require(bodies.count == 3)
+            // Request 2 continues the response: the note follows the tool's output.
+            let inFlight = try messages(in: bodies[1])
+            let roles = inFlight.map { $0["role"] as? String }
+            #expect(roles.suffix(3) == ["assistant", "tool", "user"])
+            let note = try #require(inFlight.last)
+            #expect(String(describing: note["content"] ?? "").contains("Skip the umbrella advice."))
+            // Request 3 starts the next turn from the transcript, which replays the response
+            // in the same order and form, so a prompt cache still matches it.
+            let replayed = try messages(in: bodies[2])
+            try #require(replayed.count > inFlight.count)
+            for (sent, again) in zip(inFlight, replayed) {
+                #expect(NSDictionary(dictionary: sent).isEqual(to: again))
+            }
+        }
+
         @Test func reasoningIsSentBackWithTheToolRound() async throws {
             let toolCallWithReasoning = """
                 {"id": "c", "object": "chat.completion", "created": 0, "model": "test",
