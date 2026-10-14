@@ -84,13 +84,14 @@ import Testing
             """
         }
 
-        private var toolCallCompletion: String {
-            """
-            {"id": "c", "object": "chat.completion", "created": 0, "model": "test",
-             "choices": [{"index": 0, "finish_reason": "tool_calls", "message": {"role": "assistant", "content": null,
-               "tool_calls": [{"id": "call-1", "type": "function",
-                               "function": {"name": "getWeather", "arguments": "\(toolCallArguments)"}}]}}]}
-            """
+        private func toolCallCompletion(content: String) -> String {
+            let contentJSON = content.isEmpty ? "null" : "\"\(content)\""
+            return """
+                {"id": "c", "object": "chat.completion", "created": 0, "model": "test",
+                 "choices": [{"index": 0, "finish_reason": "tool_calls", "message": {"role": "assistant", "content": \(contentJSON),
+                   "tool_calls": [{"id": "call-1", "type": "function",
+                                   "function": {"name": "getWeather", "arguments": "\(toolCallArguments)"}}]}}]}
+                """
         }
 
         private func chunk(_ delta: String, finish: String = "null") -> String {
@@ -98,9 +99,10 @@ import Testing
                 + "\n\n"
         }
 
-        private var toolCallStream: String {
-            chunk(
-                #"{"role": "assistant", "tool_calls": [{"index": 0, "id": "call-1", "type": "function", "function": {"name": "getWeather", "arguments": "\#(toolCallArguments)"}}]}"#
+        private func toolCallStream(content: String) -> String {
+            let contentJSON = content.isEmpty ? "" : #", "content": "\#(content)""#
+            return chunk(
+                #"{"role": "assistant"\#(contentJSON), "tool_calls": [{"index": 0, "id": "call-1", "type": "function", "function": {"name": "getWeather", "arguments": "\#(toolCallArguments)"}}]}"#
             ) + chunk("{}", finish: #""tool_calls""#) + "data: [DONE]\n\n"
         }
 
@@ -116,12 +118,12 @@ import Testing
             return try #require(messages.first { $0["tool_calls"] != nil })
         }
 
-        @Test(arguments: [false, true])
-        func toolCallMessageIsTheSameInFlightAndInHistory(streaming: Bool) async throws {
+        @Test(arguments: [false, true], ["", "Let me check."])
+        func toolCallMessageIsTheSameInFlightAndInHistory(streaming: Bool, content: String) async throws {
             ToolCallHistoryURLProtocol.reset(
                 responses: streaming
-                    ? [toolCallStream, textStream("Sunny."), textStream("Done.")]
-                    : [toolCallCompletion, completion("Sunny."), completion("Done.")]
+                    ? [toolCallStream(content: content), textStream("Sunny."), textStream("Done.")]
+                    : [toolCallCompletion(content: content), completion("Sunny."), completion("Done.")]
             )
             let model = OpenAILanguageModel(
                 apiKey: "test",
@@ -139,11 +141,17 @@ import Testing
 
             // Request 2 continues the first turn after the tool ran; request 3 starts the next
             // turn from the transcript. A provider's prompt cache only matches an identical
-            // prefix, so the tool call must be sent the same way both times.
+            // prefix, so the tool call must be sent the same way both times, including the
+            // assistant's text when the model wrote some alongside its calls.
             let bodies = ToolCallHistoryURLProtocol.recordedBodies
             try #require(bodies.count == 3)
             let inFlight = try toolCallMessage(in: bodies[1])
             let replayed = try toolCallMessage(in: bodies[2])
+            if content.isEmpty {
+                #expect(inFlight["content"] is NSNull)
+            } else {
+                #expect(inFlight["content"] as? String == content)
+            }
             #expect(NSDictionary(dictionary: inFlight).isEqual(to: replayed))
         }
     }
