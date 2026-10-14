@@ -629,7 +629,9 @@ import Testing
             let tool = RecordingWeatherTool()
             let response = try await provider.makeSession(tools: [tool]).streamResponse(to: "Weather?").collect()
             #expect(response.content == "Hello")
-            #expect(tool.cities.withLock { $0 } == ["Paris", "London"])
+            // A round's OpenAI calls run at once, so they can finish in either order; the
+            // transcript and the next request keep the model's order.
+            #expect(Set(tool.cities.withLock { $0 }) == ["Paris", "London"])
             #expect(response.transcriptEntries.count == 3)
             let body = try #require(UsageURLProtocol.recordedBodies.last)
             let json = String(decoding: body, as: UTF8.self)

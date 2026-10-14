@@ -2028,61 +2028,53 @@ private func resolveToolCalls(
         decisions = Array(repeating: .execute, count: transcriptCalls.count)
     }
 
-    var results: [OpenAIToolInvocationResult] = []
-    results.reserveCapacity(transcriptCalls.count)
-
-    for (index, call) in transcriptCalls.enumerated() {
-        switch decisions[index] {
-        case .stop:
-            // This branch should be unreachable because `.stop` returns during decision collection.
-            // Keep it as a defensive guard in case that logic changes.
-            return .stop(calls: transcriptCalls)
-        case .provideOutput(let segments):
-            let output = Transcript.ToolOutput(
-                id: call.id,
-                toolName: call.toolName,
-                segments: segments
-            )
-            if let delegate = session.toolExecutionDelegate {
-                await delegate.didExecuteToolCall(call, output: output, in: session)
-            }
-            results.append(OpenAIToolInvocationResult(call: call, output: output))
-        case .execute:
-            guard let tool = toolsByName[call.toolName] else {
-                let message = Transcript.Segment.text(.init(content: "Tool not found: \(call.toolName)"))
-                let output = Transcript.ToolOutput(
-                    id: call.id,
-                    toolName: call.toolName,
-                    segments: [message]
-                )
-                if let delegate = session.toolExecutionDelegate {
-                    await delegate.didExecuteToolCall(call, output: output, in: session)
-                }
-                results.append(OpenAIToolInvocationResult(call: call, output: output))
-                continue
-            }
-
-            do {
-                let segments = try await tool.makeOutputSegments(from: call.arguments)
-                let output = Transcript.ToolOutput(
-                    id: call.id,
-                    toolName: tool.name,
-                    segments: segments
-                )
-                if let delegate = session.toolExecutionDelegate {
-                    await delegate.didExecuteToolCall(call, output: output, in: session)
-                }
-                results.append(OpenAIToolInvocationResult(call: call, output: output))
-            } catch {
-                if let delegate = session.toolExecutionDelegate {
-                    await delegate.didFailToolCall(call, error: error, in: session)
-                }
-                throw LanguageModelSession.ToolCallError(tool: tool, underlyingError: error)
+    // The calls in a round don't depend on each other's results, so they run at once: the
+    // round takes as long as its slowest call, not all of them in turn. Results keep the
+    // order the model gave the calls in, and the first error ends the round as before.
+    return try await withThrowingTaskGroup(of: (Int, OpenAIToolInvocationResult).self) { group in
+        for (index, call) in transcriptCalls.enumerated() {
+            let decision = decisions[index]
+            let tool = toolsByName[call.toolName]
+            group.addTask {
+                (index, try await invokeToolCall(call, decision: decision, tool: tool, session: session))
             }
         }
+        var results = [OpenAIToolInvocationResult?](repeating: nil, count: transcriptCalls.count)
+        for try await (index, result) in group {
+            results[index] = result
+        }
+        return .invocations(results.compactMap { $0 })
     }
+}
 
-    return .invocations(results)
+/// One tool call of a round: its output, from the tool or from the delegate's decision.
+private func invokeToolCall(
+    _ call: Transcript.ToolCall,
+    decision: ToolExecutionDecision,
+    tool: (any Tool)?,
+    session: LanguageModelSession
+) async throws -> OpenAIToolInvocationResult {
+    let delegate = session.toolExecutionDelegate
+    let segments: [Transcript.Segment]
+    switch decision {
+    case .provideOutput(let provided):
+        segments = provided
+    case .stop, .execute:
+        // `.stop` ends the round before any call runs; here it can only be `.execute`.
+        guard let tool else {
+            segments = [.text(.init(content: "Tool not found: \(call.toolName)"))]
+            break
+        }
+        do {
+            segments = try await tool.makeOutputSegments(from: call.arguments)
+        } catch {
+            await delegate?.didFailToolCall(call, error: error, in: session)
+            throw LanguageModelSession.ToolCallError(tool: tool, underlyingError: error)
+        }
+    }
+    let output = Transcript.ToolOutput(id: call.id, toolName: tool?.name ?? call.toolName, segments: segments)
+    await delegate?.didExecuteToolCall(call, output: output, in: session)
+    return OpenAIToolInvocationResult(call: call, output: output)
 }
 
 // MARK: - Converters
