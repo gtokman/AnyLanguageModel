@@ -598,6 +598,10 @@ public struct OpenAILanguageModel: LanguageModel {
                                 )
                             )
                         }
+                        for (entry, message) in await pendingMessages(for: session) {
+                            entries.append(entry)
+                            inFlightMessages.append(message)
+                        }
                         if type == String.self { earlierText += toolCallMessage.content ?? "" }
                         continue
                     }
@@ -719,6 +723,10 @@ public struct OpenAILanguageModel: LanguageModel {
                                     content: .text(convertSegmentsToToolContentString(output.segments))
                                 )
                             )
+                        }
+                        for (entry, message) in await pendingMessages(for: session) {
+                            entries.append(entry)
+                            inFlightMessages.append(message)
                         }
                         if type == String.self {
                             earlierText += resp.outputText ?? extractTextFromOutput(resp.output) ?? ""
@@ -960,6 +968,10 @@ public struct OpenAILanguageModel: LanguageModel {
                                         content: .text(convertSegmentsToToolContentString(invocation.output.segments))
                                     )
                                 )
+                            }
+                            for (entry, message) in await pendingMessages(for: session) {
+                                state.entries.append(entry)
+                                inFlightMessages.append(message)
                             }
                         }
                         // This round's text now goes with its tool calls, so a response that
@@ -1459,6 +1471,18 @@ private func toolCallsMessage(_ calls: Transcript.ToolCalls, reasoning: Transcri
     ]
     message.merge(ChatCompletionsReasoning(reasoning).fields) { current, _ in current }
     return OpenAIMessage(role: .raw(rawContent: .object(message)), content: .text(""))
+}
+
+/// The messages the session's delegate wants added before the next request
+/// (`ToolExecutionDelegate.pendingMessages(in:)`), as prompt entries and as the user messages
+/// a transcript replays them as, so the request is the same now and in later responses.
+private func pendingMessages(for session: LanguageModelSession) async -> [(Transcript.Entry, OpenAIMessage)] {
+    guard let delegate = session.toolExecutionDelegate else { return [] }
+    return await delegate.pendingMessages(in: session).map { text in
+        let segments: [Transcript.Segment] = [.text(.init(content: text))]
+        let entry = Transcript.Entry.prompt(Transcript.Prompt(segments: segments))
+        return (entry, OpenAIMessage(role: .user, content: .blocks(convertSegmentsToOpenAIBlocks(segments))))
+    }
 }
 
 /// The content's JSON with its keys sorted, so the same arguments are always the same bytes.
