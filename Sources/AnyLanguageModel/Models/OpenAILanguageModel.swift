@@ -499,6 +499,8 @@ public struct OpenAILanguageModel: LanguageModel {
         var text = ""
         // The text of earlier tool rounds, which string responses include.
         var earlierText = ""
+        // The text of the final round alone.
+        var roundText = ""
         var inFlightMessages: [OpenAIMessage] = []
 
         var toolRounds = ToolRoundLimit(provider: "OpenAI", options: options)
@@ -599,7 +601,8 @@ public struct OpenAILanguageModel: LanguageModel {
                 }
             }
 
-            text = earlierText + (choice.message.content ?? "")
+            roundText = choice.message.content ?? ""
+            text = earlierText + roundText
             break
         }
 
@@ -608,7 +611,8 @@ public struct OpenAILanguageModel: LanguageModel {
                 content: text as! Content,
                 rawContent: GeneratedContent(text),
                 transcriptEntries: ArraySlice(entries),
-                usage: usage.value
+                usage: usage.value,
+                providerMetadata: responseContentMetadata(text, roundText: roundText)
             )
         }
 
@@ -884,7 +888,10 @@ public struct OpenAILanguageModel: LanguageModel {
                                     calls[delta.index] = call
                                 }
                                 if delta?.content?.isEmpty == false || chunk.usage?.reportedUsage != nil {
-                                    if let snapshot = state.snapshot() { continuation.yield(snapshot) }
+                                    let metadata = responseContentMetadata(state.responseText, roundText: state.text)
+                                    if let snapshot = state.snapshot(providerMetadata: metadata) {
+                                        continuation.yield(snapshot)
+                                    }
                                 }
                             }
                             toolCalls = calls.keys.sorted().compactMap { calls[$0]?.toolCall }
@@ -935,7 +942,12 @@ public struct OpenAILanguageModel: LanguageModel {
                                 )
                             }
                         }
-                        if let snapshot = state.snapshot() { continuation.yield(snapshot) }
+                        // This round's text now goes with its tool calls, so a response that
+                        // ends here has no text of its own to replay.
+                        let metadata =
+                            apiVariant == .chatCompletions
+                            ? responseContentMetadata(state.responseText, roundText: "") : nil
+                        if let snapshot = state.snapshot(providerMetadata: metadata) { continuation.yield(snapshot) }
                         state.beginNextRound()
                     }
                     continuation.finish()
@@ -1363,6 +1375,17 @@ private func assistantContentMetadata(_ text: String?) -> [String: String]? {
     return [assistantContentMetadataKey: text]
 }
 
+/// The text that a Chat Completions string response replays, kept in
+/// ``Transcript/Response/providerMetadata`` when it differs from the response's content.
+///
+/// A string response includes the text of every tool round,
+/// but replay already sends each round's text with that round's calls.
+/// The response keeps only the final round's text,
+/// so replay sends each piece of text once, as the requests in flight did.
+private func responseContentMetadata(_ responseText: String, roundText: String) -> [String: String]? {
+    responseText == roundText ? nil : [assistantContentMetadataKey: roundText]
+}
+
 /// The assistant message that carries a round of tool calls.
 ///
 /// Built from the transcript's calls both for the round in flight and when the history is
@@ -1427,10 +1450,14 @@ extension Transcript {
                 // Keep display history in the transcript without sending unsupported replay state.
                 continue
             case .response(let response):
+                let segments =
+                    response.providerMetadata?[assistantContentMetadataKey].map {
+                        [Transcript.Segment.text(.init(content: $0))]
+                    } ?? response.segments
                 messages.append(
                     .init(
                         role: .assistant,
-                        content: .blocks(convertSegmentsToOpenAIBlocks(response.segments))
+                        content: .blocks(convertSegmentsToOpenAIBlocks(segments))
                     )
                 )
             case .toolCalls(let toolCalls):

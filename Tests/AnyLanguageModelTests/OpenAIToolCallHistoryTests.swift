@@ -154,6 +154,48 @@ import Testing
             }
             #expect(NSDictionary(dictionary: inFlight).isEqual(to: replayed))
         }
+
+        /// The text of each assistant message without tool calls, as sent in a request body.
+        private func assistantTexts(in body: Data) throws -> [String] {
+            let json = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+            let messages = try #require(json["messages"] as? [[String: Any]])
+            return messages.filter { $0["role"] as? String == "assistant" && $0["tool_calls"] == nil }.map {
+                if let text = $0["content"] as? String { return text }
+                let blocks = $0["content"] as? [[String: Any]] ?? []
+                return blocks.compactMap { $0["text"] as? String }.joined()
+            }
+        }
+
+        @Test(arguments: [false, true])
+        func replayedTurnSendsEachRoundsTextOnce(streaming: Bool) async throws {
+            ToolCallHistoryURLProtocol.reset(
+                responses: streaming
+                    ? [toolCallStream(content: "Let me check."), textStream("Sunny."), textStream("Done.")]
+                    : [toolCallCompletion(content: "Let me check."), completion("Sunny."), completion("Done.")]
+            )
+            let model = OpenAILanguageModel(
+                apiKey: "test",
+                model: "test",
+                session: ToolCallHistoryURLProtocol.makeSession()
+            )
+            let session = LanguageModelSession(model: model, tools: [ReorderedWeatherTool()])
+            let first: String
+            if streaming {
+                first = try await session.streamResponse(to: "Weather in Paris?").collect().content
+                for try await _ in session.streamResponse(to: "And tomorrow?") {}
+            } else {
+                first = try await session.respond(to: "Weather in Paris?").content
+                _ = try await session.respond(to: "And tomorrow?")
+            }
+
+            // The caller gets the text of every round,
+            // but the next turn sends the tool round's text only with its calls.
+            #expect(first == "Let me check.Sunny.")
+            let bodies = ToolCallHistoryURLProtocol.recordedBodies
+            try #require(bodies.count == 3)
+            #expect(try toolCallMessage(in: bodies[2])["content"] as? String == "Let me check.")
+            #expect(try assistantTexts(in: bodies[2]) == ["Sunny."])
+        }
     }
 
     /// Writes its arguments in the opposite order from its schema, like models often do, so
