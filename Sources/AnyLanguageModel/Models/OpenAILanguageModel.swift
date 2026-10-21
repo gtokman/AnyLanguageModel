@@ -510,7 +510,7 @@ public struct OpenAILanguageModel: LanguageModel {
             let tools =
                 requestContext.tools.isEmpty
                 ? nil : requestContext.tools.map(convertToolToOpenAIFormat)
-            let messages = requestContext.transcript.toOpenAIMessages() + inFlightMessages
+            let messages = requestContext.transcript.toOpenAIMessages(host: baseURL.host) + inFlightMessages
             let params = try ChatCompletions.createRequestBody(
                 model: model,
                 messages: messages,
@@ -551,7 +551,7 @@ public struct OpenAILanguageModel: LanguageModel {
             }
 
             let toolCallMessage = choice.message
-            let reasoning = toolCallMessage.reasoningEntry
+            let reasoning = toolCallMessage.reasoningEntry(host: baseURL.host)
             if let toolCalls = toolCallMessage.toolCalls, !toolCalls.isEmpty {
                 try toolRounds.record(completed: entries)
                 let resolution = try await resolveToolCalls(
@@ -587,7 +587,7 @@ public struct OpenAILanguageModel: LanguageModel {
                         )
                         if let reasoning { entries.append(.reasoning(reasoning)) }
                         entries.append(.toolCalls(calls))
-                        inFlightMessages.append(toolCallsMessage(calls, reasoning: reasoning))
+                        inFlightMessages.append(toolCallsMessage(calls, reasoning: reasoning, host: baseURL.host))
                         for invocation in invocations {
                             let output = invocation.output
                             entries.append(.toolOutput(output))
@@ -656,7 +656,7 @@ public struct OpenAILanguageModel: LanguageModel {
             let tools =
                 requestContext.tools.isEmpty
                 ? nil : requestContext.tools.map(convertToolToOpenAIFormat)
-            let messages = requestContext.transcript.toOpenAIMessages() + inFlightMessages
+            let messages = requestContext.transcript.toOpenAIMessages(host: baseURL.host) + inFlightMessages
             let params = try Responses.createRequestBody(
                 model: model,
                 messages: messages,
@@ -812,7 +812,7 @@ public struct OpenAILanguageModel: LanguageModel {
                         let tools =
                             requestContext.tools.isEmpty
                             ? nil : requestContext.tools.map(convertToolToOpenAIFormat)
-                        let messages = requestContext.transcript.toOpenAIMessages() + inFlightMessages
+                        let messages = requestContext.transcript.toOpenAIMessages(host: baseURL.host) + inFlightMessages
                         let params: JSONValue
                         let path: String
                         switch apiVariant {
@@ -844,7 +844,7 @@ public struct OpenAILanguageModel: LanguageModel {
                         let url = baseURL.appendingPathComponent(path)
                         let headers = ["Authorization": "Bearer \(tokenProvider())"]
                         var toolCalls: [OpenAIToolCall] = []
-                        var roundReasoning = ChatCompletionsReasoning()
+                        var roundReasoning = ChatCompletionsReasoning(host: baseURL.host)
 
                         switch apiVariant {
                         case .responses:
@@ -950,7 +950,9 @@ public struct OpenAILanguageModel: LanguageModel {
                             if let reasoning { state.entries.append(.reasoning(reasoning)) }
                             state.entries.append(.toolCalls(calls))
                             if apiVariant == .chatCompletions {
-                                inFlightMessages.append(toolCallsMessage(calls, reasoning: reasoning))
+                                inFlightMessages.append(
+                                    toolCallsMessage(calls, reasoning: reasoning, host: baseURL.host)
+                                )
                             }
                             for invocation in invocations {
                                 state.entries.append(.toolOutput(invocation.output))
@@ -1146,11 +1148,13 @@ private enum ChatCompletions {
                 case reasoningDetails = "reasoning_details"
             }
 
-            var reasoningEntry: Transcript.Reasoning? {
+            /// The message's reasoning as a transcript entry, from the API at `host`.
+            func reasoningEntry(host: String?) -> Transcript.Reasoning? {
                 ChatCompletionsReasoning(
                     reasoning: reasoning,
                     reasoningContent: reasoningContent,
-                    details: reasoningDetails.map { [$0] } ?? []
+                    details: reasoningDetails.map { [$0] } ?? [],
+                    host: host
                 ).entry
             }
         }
@@ -1439,8 +1443,13 @@ private func responseContentMetadata(_ responseText: String, roundText: String) 
 /// The model's text from this round is stored on the transcript's `ToolCalls`, so replay
 /// sends the same `content` as the in-flight request, including when that text is empty
 /// (both paths send `null`). Its reasoning is the transcript's reasoning entry before the
-/// calls (``ChatCompletionsReasoning``), sent back the same way on both paths.
-private func toolCallsMessage(_ calls: Transcript.ToolCalls, reasoning: Transcript.Reasoning? = nil) -> OpenAIMessage {
+/// calls (``ChatCompletionsReasoning``), sent back the same way on both paths, when the
+/// request goes to `host`, the API that wrote it.
+private func toolCallsMessage(
+    _ calls: Transcript.ToolCalls,
+    reasoning: Transcript.Reasoning? = nil,
+    host: String? = nil
+) -> OpenAIMessage {
     let text = calls.providerMetadata?[assistantContentMetadataKey]
     let toolCalls: [JSONValue] = calls.map { call in
         .object([
@@ -1457,7 +1466,7 @@ private func toolCallsMessage(_ calls: Transcript.ToolCalls, reasoning: Transcri
         "content": text.map { .string($0) } ?? .null,
         "tool_calls": .array(toolCalls),
     ]
-    message.merge(ChatCompletionsReasoning(reasoning).fields) { current, _ in current }
+    message.merge(ChatCompletionsReasoning(reasoning, sentTo: host).fields) { current, _ in current }
     return OpenAIMessage(role: .raw(rawContent: .object(message)), content: .text(""))
 }
 
@@ -1485,31 +1494,46 @@ private func stableJSON(_ content: GeneratedContent) -> String {
 ///
 /// The fields are stored as received in the entry's metadata — `reasoning_details` as its
 /// JSON text — and the reasoning text is the entry's segment, for display.
+///
+/// Hosts that serve Chat Completions don't agree on these fields: Groq rejects `reasoning`
+/// on an assistant message, and Mistral rejects `reasoning_content`. So the entry records the
+/// host of the API that wrote it, and the fields go back only to that host. A transcript
+/// carried to another one replays the messages without them.
 private struct ChatCompletionsReasoning {
     private static let provider = GeneratedContent("openai.chatCompletions")
     private enum Field {
         static let reasoning = "reasoning"
         static let reasoningContent = "reasoning_content"
         static let reasoningDetails = "reasoning_details"
+        /// Metadata only: the host of the API that wrote the reasoning.
+        static let host = "host"
     }
 
     private var reasoning = ""
     private var reasoningContent = ""
     /// The `reasoning_details` arrays received, in order; streamed chunks each carry some.
     private var details: [JSONValue] = []
+    private var host = ""
 
-    init() {}
+    /// Reasoning to collect from a stream from the API at `host`.
+    init(host: String?) {
+        self.host = host ?? ""
+    }
 
-    init(reasoning: String?, reasoningContent: String?, details: [JSONValue]) {
+    init(reasoning: String?, reasoningContent: String?, details: [JSONValue], host: String?) {
         self.reasoning = reasoning ?? ""
         self.reasoningContent = reasoningContent ?? ""
         self.details = details
+        self.host = host ?? ""
     }
 
-    /// The fields kept in `entry`; empty for a missing entry or another provider's.
-    init(_ entry: Transcript.Reasoning?) {
+    /// The fields kept in `entry`, for a request to `host`: empty for a missing entry,
+    /// another provider's, or one written by another host.
+    init(_ entry: Transcript.Reasoning?, sentTo host: String?) {
         guard let entry, entry.metadata["provider"] == Self.provider else { return }
         func string(_ key: String) -> String { (try? entry.metadata[key]?.value(String.self)) ?? "" }
+        guard let host, !host.isEmpty, string(Field.host) == host else { return }
+        self.host = host
         reasoning = string(Field.reasoning)
         reasoningContent = string(Field.reasoningContent)
         let json = string(Field.reasoningDetails)
@@ -1538,13 +1562,15 @@ private struct ChatCompletionsReasoning {
 
     /// A reasoning entry for the transcript; `nil` when the message had no reasoning.
     var entry: Transcript.Reasoning? {
-        var metadata: [String: GeneratedContent] = ["provider": Self.provider]
+        var metadata: [String: GeneratedContent] = [:]
         if !reasoning.isEmpty { metadata[Field.reasoning] = GeneratedContent(reasoning) }
         if !reasoningContent.isEmpty { metadata[Field.reasoningContent] = GeneratedContent(reasoningContent) }
         if let detailsValue, let data = try? JSONEncoder().encode(detailsValue) {
             metadata[Field.reasoningDetails] = GeneratedContent(String(decoding: data, as: UTF8.self))
         }
-        guard metadata.count > 1 else { return nil }
+        guard !metadata.isEmpty else { return nil }
+        metadata["provider"] = Self.provider
+        if !host.isEmpty { metadata[Field.host] = GeneratedContent(host) }
         let id = UUID().uuidString
         let text = reasoningContent.isEmpty ? reasoning : reasoningContent
         return Transcript.Reasoning(
@@ -1565,9 +1591,11 @@ private struct ChatCompletionsReasoning {
 }
 
 extension Transcript {
-    fileprivate func toOpenAIMessages() -> [OpenAIMessage] {
+    /// The transcript as messages for a request to the API at `host`.
+    fileprivate func toOpenAIMessages(host: String?) -> [OpenAIMessage] {
         var messages = [OpenAIMessage]()
-        // A Chat Completions reasoning entry goes back on the assistant message right after it.
+        // A Chat Completions reasoning entry goes back on the assistant message right after
+        // it, when the request goes to the host that wrote it.
         var pendingReasoning: Transcript.Reasoning?
         for item in self {
             let reasoning = pendingReasoning
@@ -1588,8 +1616,8 @@ extension Transcript {
                     )
                 )
             case .reasoning(let entry):
-                // Other providers' reasoning stays display history: it can't be replayed here.
-                pendingReasoning = ChatCompletionsReasoning(entry).entry
+                // Other providers' and hosts' reasoning stays display history.
+                pendingReasoning = entry
                 continue
             case .response(let response):
                 let segments =
@@ -1600,11 +1628,11 @@ extension Transcript {
                     .init(
                         role: .assistant,
                         content: .blocks(convertSegmentsToOpenAIBlocks(segments)),
-                        reasoning: ChatCompletionsReasoning(reasoning).fields
+                        reasoning: ChatCompletionsReasoning(reasoning, sentTo: host).fields
                     )
                 )
             case .toolCalls(let toolCalls):
-                messages.append(toolCallsMessage(toolCalls, reasoning: reasoning))
+                messages.append(toolCallsMessage(toolCalls, reasoning: reasoning, host: host))
             case .toolOutput(let toolOutput):
                 messages.append(
                     .init(

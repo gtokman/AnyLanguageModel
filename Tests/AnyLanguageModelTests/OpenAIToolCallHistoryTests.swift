@@ -313,6 +313,47 @@ import Testing
             #expect(assistant["reasoning_content"] as? String == "Greet them.")
         }
 
+        /// Hosts disagree on the fields (Groq rejects `reasoning`, Mistral `reasoning_content`),
+        /// so a transcript carried to another host replays its messages without them.
+        @Test(arguments: [false, true])
+        func reasoningGoesBackOnlyToTheHostThatWroteIt(sameHost: Bool) async throws {
+            ToolCallHistoryURLProtocol.reset(responses: [
+                reasoningToolCallCompletion(), completion("Sunny."), completion("Done."),
+            ])
+            let deepSeek = URL(string: "https://api.deepseek.com/v1/")!
+            let first = OpenAILanguageModel(
+                baseURL: deepSeek,
+                apiKey: "test",
+                model: "test",
+                session: ToolCallHistoryURLProtocol.makeSession()
+            )
+            let session = LanguageModelSession(model: first, tools: [ReorderedWeatherTool()])
+            _ = try await session.respond(to: "Weather in Paris?")
+
+            let next = OpenAILanguageModel(
+                baseURL: sameHost ? deepSeek : URL(string: "https://api.groq.com/openai/v1/")!,
+                apiKey: "test",
+                model: "test",
+                session: ToolCallHistoryURLProtocol.makeSession()
+            )
+            let continued = LanguageModelSession(
+                model: next,
+                tools: [ReorderedWeatherTool()],
+                transcript: session.transcript
+            )
+            _ = try await continued.respond(to: "And tomorrow?")
+
+            let body = try #require(ToolCallHistoryURLProtocol.recordedBodies.last)
+            let message = try toolCallMessage(in: body)
+            if sameHost {
+                expectReasoning(message)
+            } else {
+                #expect(message["reasoning"] == nil)
+                #expect(message["reasoning_content"] == nil)
+                #expect(message["reasoning_details"] == nil)
+            }
+        }
+
         @Test func otherProvidersReasoningIsNotSent() async throws {
             ToolCallHistoryURLProtocol.reset(responses: [chatCompletion])
             let model = OpenAILanguageModel(
