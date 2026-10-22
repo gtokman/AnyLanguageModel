@@ -340,6 +340,45 @@ import Testing
             #expect(assistant["reasoning_content"] as? String == "Greet them.")
         }
 
+        /// Reasoning that no assistant message followed, as a turn that failed or was cancelled
+        /// leaves it with `.preserveTranscript`, isn't sent with the next turn's answer:
+        /// a prompt or instructions start anew.
+        @Test(arguments: [
+            Transcript.Entry.prompt(.init(segments: [.text(.init(content: "Again"))])),
+            .instructions(.init(segments: [.text(.init(content: "Be brief."))], toolDefinitions: [])),
+        ])
+        func reasoningAFailedTurnLeftIsntSent(startingAnew: Transcript.Entry) async throws {
+            ToolCallHistoryURLProtocol.reset(responses: [chatCompletion])
+            let model = OpenAILanguageModel(
+                apiKey: "test",
+                model: "test",
+                transport: ToolCallHistoryURLProtocol.makeSession()
+            )
+            let transcript = Transcript(entries: [
+                .prompt(.init(segments: [.text(.init(content: "Hi"))])),
+                .reasoning(
+                    .init(
+                        origin: .chatCompletions,
+                        metadata: [
+                            "reasoning_content": GeneratedContent("Left over."),
+                            "host": GeneratedContent(try #require(model.baseURL.host)),
+                        ],
+                        segments: [.text(.init(content: "Left over."))]
+                    )
+                ),
+                startingAnew,
+                .response(.init(assetIDs: [], segments: [.text(.init(content: "Hello."))])),
+            ])
+            let session = LanguageModelSession(model: model, transcript: transcript)
+            _ = try await session.respond(to: "How are you?")
+
+            let body = try #require(ToolCallHistoryURLProtocol.recordedBodies.last)
+            let json = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+            let messages = try #require(json["messages"] as? [[String: Any]])
+            #expect(messages.contains { $0["role"] as? String == "assistant" })
+            #expect(!messages.contains { $0["reasoning_content"] != nil }, "\(messages)")
+        }
+
         /// Hosts disagree on the fields (Groq rejects `reasoning`, Mistral `reasoning_content`),
         /// so a transcript carried to another host replays its messages without them.
         @Test(arguments: [false, true])
