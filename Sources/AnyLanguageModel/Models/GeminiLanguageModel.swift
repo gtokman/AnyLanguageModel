@@ -1,5 +1,7 @@
 import EventSource
 import Foundation
+import HTTPTypes
+import HTTPTypesFoundation
 import JSONSchema
 import OrderedCollections
 
@@ -147,7 +149,11 @@ public struct GeminiLanguageModel: LanguageModel {
 
     public let model: String
 
-    private let httpSession: HTTPSession
+    /// How long to wait for a streamed response to start. With URLSession, it's how long to
+    /// wait for each part of the response, so it applies while the response streams too.
+    public let responseStartTimeout: Duration?
+
+    private let transport: any HTTPTransport
 
     /// Creates a new Gemini language model.
     ///
@@ -156,13 +162,18 @@ public struct GeminiLanguageModel: LanguageModel {
     ///   - tokenProvider: A closure that provides the API key.
     ///   - apiVersion: The API version to use.
     ///   - model: The model identifier.
-    ///   - session: The HTTP session or client used for network requests.
+    ///   - responseStartTimeout: How long to wait for a streamed response to start, or `nil`, the
+    ///     default, for the transport to decide: a URL session waits as its configuration says, and
+    ///     AsyncHTTPClient up to 180 seconds. On Linux, a URL session waits whole seconds, so it
+    ///     rounds up to the next one.
+    ///   - transport: How it sends its requests: by default ``makeDefaultTransport()``.
     public init(
         baseURL: URL = defaultBaseURL,
         apiKey tokenProvider: @escaping @autoclosure @Sendable () -> String,
         apiVersion: String = defaultAPIVersion,
         model: String,
-        session: HTTPSession = makeDefaultSession(),
+        responseStartTimeout: Duration? = nil,
+        transport: any HTTPTransport = makeDefaultTransport(),
     ) {
         var baseURL = baseURL
         if !baseURL.path.hasSuffix("/") {
@@ -173,7 +184,20 @@ public struct GeminiLanguageModel: LanguageModel {
         self.tokenProvider = tokenProvider
         self.apiVersion = apiVersion
         self.model = model
-        self.httpSession = session
+        self.responseStartTimeout = responseStartTimeout
+        self.transport = transport
+    }
+
+    /// Creates a model that sends its requests with `session`.
+    @available(*, deprecated, renamed: "init(baseURL:apiKey:apiVersion:model:transport:)")
+    public init(
+        baseURL: URL = defaultBaseURL,
+        apiKey tokenProvider: @escaping @autoclosure @Sendable () -> String,
+        apiVersion: String = defaultAPIVersion,
+        model: String,
+        session: HTTPSession
+    ) {
+        self.init(baseURL: baseURL, apiKey: tokenProvider(), apiVersion: apiVersion, model: model, transport: session)
     }
 
     public func respond<Content>(
@@ -237,7 +261,7 @@ public struct GeminiLanguageModel: LanguageModel {
         // The entries this call adds, which is what the response reports. `inFlightEntries`
         // preserves tool rounds while each iteration rebuilds the request from a fresh context.
         var entries: [Transcript.Entry] = []
-        var usage = ReportedUsage()
+        var usage = RequestsUsage()
         // The text of earlier tool rounds, which string responses include.
         var earlierText = ""
 
@@ -265,10 +289,8 @@ public struct GeminiLanguageModel: LanguageModel {
 
             let body = try JSONEncoder().encode(params)
 
-            let response: GeminiGenerateContentResponse = try await httpSession.fetch(
-                .post,
-                url: url,
-                headers: headers,
+            let response: GeminiGenerateContentResponse = try await transport.fetch(
+                HTTPRequest(method: .post, url: url, headerFields: headers),
                 body: body
             )
 
@@ -306,7 +328,7 @@ public struct GeminiLanguageModel: LanguageModel {
                         content: empty.content,
                         rawContent: empty.rawContent,
                         transcriptEntries: ArraySlice(entries),
-                        usage: usage.value
+                        requests: usage
                     )
                 case .invocations(let invocations):
                     if !invocations.isEmpty {
@@ -337,7 +359,7 @@ public struct GeminiLanguageModel: LanguageModel {
                         content: text as! Content,
                         rawContent: GeneratedContent(text),
                         transcriptEntries: ArraySlice(entries),
-                        usage: usage.value,
+                        requests: usage,
                         providerMetadata: providerMetadata
                     )
                 }
@@ -348,7 +370,7 @@ public struct GeminiLanguageModel: LanguageModel {
                     content: content,
                     rawContent: generatedContent,
                     transcriptEntries: ArraySlice(entries),
-                    usage: usage.value,
+                    requests: usage,
                     providerMetadata: providerMetadata
                 )
             }
@@ -442,7 +464,11 @@ public struct GeminiLanguageModel: LanguageModel {
                         )
                         let body = try JSONEncoder().encode(params)
                         let stream: AsyncThrowingStream<GeminiGenerateContentResponse, any Error> =
-                            httpSession.fetchEventStream(.post, url: url, headers: headers, body: body)
+                            transport.fetchEventStream(
+                                HTTPRequest(method: .post, url: url, headerFields: headers),
+                                body: body,
+                                timeout: responseStartTimeout
+                            )
                         var parts: [GeminiPart] = []
                         var functionCalls: [GeminiFunctionCall] = []
                         for try await chunk in stream {
@@ -510,12 +536,8 @@ public struct GeminiLanguageModel: LanguageModel {
         return LanguageModelSession.ResponseStream(stream: stream)
     }
 
-    private func buildHeaders() -> [String: String] {
-        let headers: [String: String] = [
-            "x-goog-api-key": tokenProvider()
-        ]
-
-        return headers
+    private func buildHeaders() -> HTTPFields {
+        [.googleAPIKey: tokenProvider()]
     }
 
     private func buildTools(from tools: [any Tool], serverTools: [CustomGenerationOptions.ServerTool]) throws
@@ -1208,4 +1230,8 @@ enum GeminiError: Error, CustomStringConvertible {
             return "No candidate in response"
         }
     }
+}
+
+extension HTTPField.Name {
+    fileprivate static let googleAPIKey = Self("x-goog-api-key")!
 }

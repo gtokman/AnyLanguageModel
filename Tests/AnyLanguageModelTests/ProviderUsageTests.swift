@@ -9,7 +9,9 @@ import Testing
         enum Provider: CaseIterable, Equatable, Sendable {
             case chat, responses, openResponses, anthropic, gemini, ollama
 
-            func makeSession(tools: [any Tool] = []) -> LanguageModelSession {
+            func makeSession(tools: [any Tool] = [], responseStartTimeout: Duration = .seconds(60))
+                -> LanguageModelSession
+            {
                 let http = UsageURLProtocol.makeSession()
                 let model: any LanguageModel
                 switch self {
@@ -18,21 +20,37 @@ import Testing
                         apiKey: "test",
                         model: "test",
                         apiVariant: self == .chat ? .chatCompletions : .responses,
-                        session: http
+                        responseStartTimeout: responseStartTimeout,
+                        transport: http
                     )
                 case .openResponses:
                     model = OpenResponsesLanguageModel(
                         baseURL: URL(string: "https://example.com/v1")!,
                         apiKey: "test",
                         model: "test",
-                        session: http
+                        responseStartTimeout: responseStartTimeout,
+                        transport: http
                     )
                 case .anthropic:
-                    model = AnthropicLanguageModel(apiKey: "test", model: "test", session: http)
+                    model = AnthropicLanguageModel(
+                        apiKey: "test",
+                        model: "test",
+                        responseStartTimeout: responseStartTimeout,
+                        transport: http
+                    )
                 case .gemini:
-                    model = GeminiLanguageModel(apiKey: "test", model: "test", session: http)
+                    model = GeminiLanguageModel(
+                        apiKey: "test",
+                        model: "test",
+                        responseStartTimeout: responseStartTimeout,
+                        transport: http
+                    )
                 case .ollama:
-                    model = OllamaLanguageModel(model: "test", session: http)
+                    model = OllamaLanguageModel(
+                        model: "test",
+                        responseStartTimeout: responseStartTimeout,
+                        transport: http
+                    )
                 }
                 return LanguageModelSession(model: model, tools: tools)
             }
@@ -317,6 +335,16 @@ import Testing
             }
         }
 
+        /// A streamed request waits as long as the model's `responseStartTimeout` for the response.
+        @Test(arguments: Provider.allCases)
+        func streamingWaitsForTheResponseStartTimeout(_ provider: Provider) async throws {
+            UsageURLProtocol.reset()
+            UsageURLProtocol.enqueue(json: try provider.stream())
+            _ = try await provider.makeSession(responseStartTimeout: .milliseconds(2500)).streamResponse(to: "Hi")
+                .collect()
+            #expect(UsageURLProtocol.recordedTimeoutIntervals == [2.5])
+        }
+
         @Test(arguments: Provider.allCases)
         func streamingUsageAndCollect(_ provider: Provider) async throws {
             UsageURLProtocol.reset()
@@ -393,8 +421,10 @@ import Testing
             { .provideOutput([.text(.init(content: "Cached weather"))]) }
         }
 
+        /// As in Foundation Models, a streamed response reports its final request's usage,
+        /// and the session counts every request.
         @Test(arguments: Provider.allCases)
-        func streamedToolRoundsAccumulateUsage(_ provider: Provider) async throws {
+        func streamedToolRoundsReportTheFinalRequest(_ provider: Provider) async throws {
             UsageURLProtocol.reset()
             UsageURLProtocol.enqueue(json: try provider.toolStream())
             UsageURLProtocol.enqueue(json: try provider.toolStream(city: "London", callID: "call_2"))
@@ -405,17 +435,17 @@ import Testing
             for try await snapshot in session.streamResponse(to: "Weather?") { snapshots.append(snapshot) }
             let last = try #require(snapshots.last)
             #expect(last.content == "Hello")
-            var expected = provider.expected
-            expected.add(provider.expected)
-            expected.add(provider.expected)
-            #expect(last.usage == expected)
-            #expect(session.usage == expected)
+            var everyRequest = provider.expected
+            everyRequest.add(provider.expected)
+            everyRequest.add(provider.expected)
+            #expect(last.usage == provider.expected)
+            #expect(session.usage == everyRequest)
             #expect(last.transcriptEntries.count == 4)
             #expect(session.transcript.count == 6)
             #expect(tool.cities.withLock { $0 } == ["Paris", "London"])
             #expect(UsageURLProtocol.recordedBodies.count == 3)
             for (previous, next) in zip(snapshots, snapshots.dropFirst()) {
-                #expect(next.usage.totalTokenCount >= previous.usage.totalTokenCount)
+                #expect(next.requests.total.totalTokenCount >= previous.requests.total.totalTokenCount)
                 #expect(next.transcriptEntries.count >= previous.transcriptEntries.count)
             }
         }
@@ -925,8 +955,10 @@ import Testing
             #expect(response.content == "Hello")
         }
 
+        /// As in Foundation Models, a response reports its final request's usage,
+        /// and the session counts every request.
         @Test(arguments: [Provider.chat, .responses, .openResponses, .gemini])
-        func toolRoundsAccumulateUsage(_ provider: Provider) async throws {
+        func toolRoundsReportTheFinalRequest(_ provider: Provider) async throws {
             UsageURLProtocol.reset()
             UsageURLProtocol.enqueue(
                 json: try Self.json(provider.response(text: "", counts: provider.counts, tool: true))
@@ -934,14 +966,27 @@ import Testing
             UsageURLProtocol.enqueue(json: try Self.json(provider.response(counts: provider.counts)))
             let session = provider.makeSession(tools: [WeatherTool()])
             let response = try await session.respond(to: "Weather?")
-            #expect(session.usage == response.usage)
+            var everyRequest = provider.expected
+            everyRequest.add(provider.expected)
             #expect(response.content == "Hello")
-            #expect(response.usage.input.totalTokenCount == (provider == .gemini ? 220 : 200))
-            #expect(response.usage.output.totalTokenCount == (provider == .gemini ? 50 : 40))
-            #expect(response.usage.output.reasoningTokenCount == 10)
-            #expect(response.usage.input.cachedTokenCount == 50)
+            #expect(response.usage == provider.expected)
+            #expect(session.usage == everyRequest)
             #expect(response.transcriptEntries.count == 2)
             #expect(UsageURLProtocol.recordedBodies.count == 2)
+        }
+
+        /// The final request's usage is its own, even when it reports none and an earlier one did.
+        @Test(arguments: [Provider.chat, .responses, .openResponses, .gemini])
+        func finalRequestWithoutUsageReportsNone(_ provider: Provider) async throws {
+            UsageURLProtocol.reset()
+            UsageURLProtocol.enqueue(
+                json: try Self.json(provider.response(text: "", counts: provider.counts, tool: true))
+            )
+            UsageURLProtocol.enqueue(json: try Self.json(provider.response()))
+            let session = provider.makeSession(tools: [WeatherTool()])
+            let response = try await session.respond(to: "Weather?")
+            #expect(response.usage == .zero)
+            #expect(session.usage == provider.expected)
         }
 
         private struct StopDelegate: ToolExecutionDelegate {
@@ -965,6 +1010,88 @@ import Testing
     /// A `URLProtocol` that answers requests from a queue of canned responses
     /// and records every request body it sees,
     /// so request/response round trips can be asserted offline.
+    extension ProviderUsageTests {
+        // MARK: Responses that throw
+
+        /// The usage of every request the provider received, `provider.expected` each.
+        private static func usage(of provider: Provider, requests: Int) -> LanguageModelSession.Usage {
+            var usage = LanguageModelSession.Usage.zero
+            for _ in 0 ..< requests { usage.add(provider.expected) }
+            return usage
+        }
+
+        /// As in Foundation Models, a request is counted as it completes, so a response whose tool
+        /// fails keeps what its request used.
+        @Test(arguments: Provider.allCases)
+        func aFailedToolKeepsItsRequestsUsage(_ provider: Provider) async throws {
+            UsageURLProtocol.reset()
+            UsageURLProtocol.enqueue(json: try Self.json(provider.response(counts: provider.counts, tool: true)))
+            var tool = RecordingWeatherTool()
+            tool.fails = true
+            let session = provider.makeSession(tools: [tool])
+            await #expect(throws: LanguageModelSession.ToolCallError.self) { try await session.respond(to: "Weather?") }
+            #expect(UsageURLProtocol.recordedBodies.count == 1)
+            #expect(session.usage == provider.expected)
+            #expect(!session.isResponding)
+        }
+
+        /// A response past its tool-round limit keeps what each of its requests used.
+        @Test(arguments: Provider.allCases)
+        func aResponsePastItsToolRoundLimitKeepsItsRequestsUsage(_ provider: Provider) async throws {
+            UsageURLProtocol.reset()
+            UsageURLProtocol.enqueue(json: try Self.json(provider.response(counts: provider.counts, tool: true)))
+            UsageURLProtocol.enqueue(json: try Self.json(provider.response(counts: provider.counts, tool: true)))
+            let session = provider.makeSession(tools: [RecordingWeatherTool()])
+            var options = GenerationOptions()
+            options.maximumToolRounds = 1
+            _ = try? await session.respond(to: "Weather?", options: options)
+            let requests = UsageURLProtocol.recordedBodies.count
+            #expect(requests >= 1)
+            #expect(session.usage == Self.usage(of: provider, requests: requests))
+        }
+
+        /// An answer that isn't the content asked for keeps what its request used.
+        @Test(arguments: Provider.allCases)
+        func anAnswerThatDoesntDecodeKeepsItsRequestsUsage(_ provider: Provider) async throws {
+            UsageURLProtocol.reset()
+            UsageURLProtocol.enqueue(json: try Self.json(provider.response(text: "not json", counts: provider.counts)))
+            let session = provider.makeSession()
+            await #expect(throws: (any Error).self) {
+                try await session.respond(to: "Hi", generating: SimpleString.self)
+            }
+            #expect(session.usage == provider.expected)
+        }
+
+        /// The response after one that threw counts its own requests, and reports only its own.
+        @Test(arguments: Provider.allCases)
+        func theResponseAfterAFailureCountsOnlyItsOwn(_ provider: Provider) async throws {
+            UsageURLProtocol.reset()
+            UsageURLProtocol.enqueue(json: try Self.json(provider.response(counts: provider.counts, tool: true)))
+            UsageURLProtocol.enqueue(json: try Self.json(provider.response(counts: provider.counts)))
+            var tool = RecordingWeatherTool()
+            tool.fails = true
+            let session = provider.makeSession(tools: [tool])
+            _ = try? await session.respond(to: "Weather?")
+            let response = try await session.respond(to: "Hi")
+            #expect(response.usage == provider.expected)
+            #expect(session.usage == Self.usage(of: provider, requests: 2))
+        }
+
+        /// A response that completes is counted once: what its requests reported as they completed,
+        /// and nothing more from the response.
+        @Test(arguments: Provider.allCases)
+        func aCompletedToolRoundIsCountedOnce(_ provider: Provider) async throws {
+            UsageURLProtocol.reset()
+            UsageURLProtocol.enqueue(json: try Self.json(provider.response(counts: provider.counts, tool: true)))
+            UsageURLProtocol.enqueue(json: try Self.json(provider.response(counts: provider.counts)))
+            let session = provider.makeSession(tools: [RecordingWeatherTool()])
+            let response = try await session.respond(to: "Weather?")
+            let requests = UsageURLProtocol.recordedBodies.count
+            #expect(response.usage == provider.expected)
+            #expect(session.usage == Self.usage(of: provider, requests: requests))
+        }
+    }
+
     private final class UsageURLProtocol: URLProtocol {
         struct Exchange: Sendable {
             var statusCode: Int = 200
@@ -974,6 +1101,7 @@ import Testing
         private struct State: Sendable {
             var pending: [Exchange] = []
             var recordedBodies: [Data] = []
+            var recordedTimeoutIntervals: [TimeInterval] = []
         }
 
         private static let state = Locked(State())
@@ -995,6 +1123,12 @@ import Testing
             state.withLock { $0.recordedBodies }
         }
 
+        /// The timeout intervals of the requests seen so far,
+        /// in order.
+        static var recordedTimeoutIntervals: [TimeInterval] {
+            state.withLock { $0.recordedTimeoutIntervals }
+        }
+
         /// A session that routes every request to this protocol.
         static func makeSession() -> URLSession {
             let configuration = URLSessionConfiguration.ephemeral
@@ -1013,6 +1147,7 @@ import Testing
 
             let exchange = Self.state.withLock { state -> Exchange? in
                 state.recordedBodies.append(body)
+                state.recordedTimeoutIntervals.append(request.timeoutInterval)
                 return state.pending.isEmpty ? nil : state.pending.removeFirst()
             }
 
