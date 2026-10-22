@@ -61,7 +61,7 @@ import Testing
                 apiKey: "test",
                 model: "test",
                 apiVariant: variant,
-                session: ToolCallHistoryURLProtocol.makeSession()
+                transport: ToolCallHistoryURLProtocol.makeSession()
             )
             let session = LanguageModelSession(model: model, transcript: try transcript())
             _ = try await session.respond(to: "And tomorrow?")
@@ -128,7 +128,7 @@ import Testing
             let model = OpenAILanguageModel(
                 apiKey: "test",
                 model: "test",
-                session: ToolCallHistoryURLProtocol.makeSession()
+                transport: ToolCallHistoryURLProtocol.makeSession()
             )
             let session = LanguageModelSession(model: model, tools: [ReorderedWeatherTool()])
             if streaming {
@@ -176,7 +176,7 @@ import Testing
             let model = OpenAILanguageModel(
                 apiKey: "test",
                 model: "test",
-                session: ToolCallHistoryURLProtocol.makeSession()
+                transport: ToolCallHistoryURLProtocol.makeSession()
             )
             let session = LanguageModelSession(model: model, tools: [ReorderedWeatherTool()])
             let first: String
@@ -254,7 +254,7 @@ import Testing
             let model = OpenAILanguageModel(
                 apiKey: "test",
                 model: "test",
-                session: ToolCallHistoryURLProtocol.makeSession()
+                transport: ToolCallHistoryURLProtocol.makeSession()
             )
             let session = LanguageModelSession(model: model, tools: [ReorderedWeatherTool()])
             if streaming {
@@ -281,6 +281,33 @@ import Testing
             }
             let text = Transcript.TextSegment(id: reasoning.id + ":text", content: "Check the weather first.")
             #expect(reasoning.segments == [.text(text)])
+            #expect(reasoning.origin == .chatCompletions)
+        }
+
+        /// A transcript stores the origin in the entry's metadata, so it survives being saved.
+        @Test func reasoningIsReplayedFromADecodedTranscript() async throws {
+            ToolCallHistoryURLProtocol.reset(responses: [
+                reasoningToolCallCompletion(), completion("Sunny."), completion("Done."),
+            ])
+            let model = OpenAILanguageModel(
+                apiKey: "test",
+                model: "test",
+                transport: ToolCallHistoryURLProtocol.makeSession()
+            )
+            let session = LanguageModelSession(model: model, tools: [ReorderedWeatherTool()])
+            _ = try await session.respond(to: "Weather in Paris?")
+
+            let data = try JSONEncoder().encode(session.transcript)
+            #expect(String(decoding: data, as: UTF8.self).contains(#""openai.chatCompletions""#))
+            let decoded = try JSONDecoder().decode(Transcript.self, from: data)
+            let reasoning = decoded.compactMap { if case .reasoning(let reasoning) = $0 { reasoning } else { nil } }
+            #expect(reasoning.map(\.origin) == [.chatCompletions])
+
+            let restored = LanguageModelSession(model: model, tools: [ReorderedWeatherTool()], transcript: decoded)
+            _ = try await restored.respond(to: "And tomorrow?")
+
+            let body = try #require(ToolCallHistoryURLProtocol.recordedBodies.last)
+            expectReasoning(try toolCallMessage(in: body))
         }
 
         /// DeepSeek: with tools in the request, every earlier assistant message needs its
@@ -295,7 +322,7 @@ import Testing
             let model = OpenAILanguageModel(
                 apiKey: "test",
                 model: "test",
-                session: ToolCallHistoryURLProtocol.makeSession()
+                transport: ToolCallHistoryURLProtocol.makeSession()
             )
             let session = LanguageModelSession(model: model, tools: [ReorderedWeatherTool()])
             if streaming {
@@ -325,7 +352,7 @@ import Testing
                 baseURL: deepSeek,
                 apiKey: "test",
                 model: "test",
-                session: ToolCallHistoryURLProtocol.makeSession()
+                transport: ToolCallHistoryURLProtocol.makeSession()
             )
             let session = LanguageModelSession(model: first, tools: [ReorderedWeatherTool()])
             _ = try await session.respond(to: "Weather in Paris?")
@@ -334,7 +361,7 @@ import Testing
                 baseURL: sameHost ? deepSeek : URL(string: "https://api.groq.com/openai/v1/")!,
                 apiKey: "test",
                 model: "test",
-                session: ToolCallHistoryURLProtocol.makeSession()
+                transport: ToolCallHistoryURLProtocol.makeSession()
             )
             let continued = LanguageModelSession(
                 model: next,
@@ -354,18 +381,19 @@ import Testing
             }
         }
 
-        @Test func otherProvidersReasoningIsNotSent() async throws {
+        @Test(arguments: Transcript.Reasoning.Origin.allCases.filter { $0 != .chatCompletions })
+        func otherProvidersReasoningIsNotSent(origin: Transcript.Reasoning.Origin) async throws {
             ToolCallHistoryURLProtocol.reset(responses: [chatCompletion])
             let model = OpenAILanguageModel(
                 apiKey: "test",
                 model: "test",
-                session: ToolCallHistoryURLProtocol.makeSession()
+                transport: ToolCallHistoryURLProtocol.makeSession()
             )
             var entries = Array(try transcript())
             entries.insert(
                 .reasoning(
                     Transcript.Reasoning(
-                        metadata: ["provider": GeneratedContent("anthropic")],
+                        origin: origin,
                         segments: [.text(.init(content: "Thinking."))],
                         signature: Data("signature".utf8)
                     )

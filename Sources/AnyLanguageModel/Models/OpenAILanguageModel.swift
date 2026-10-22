@@ -1524,7 +1524,6 @@ private func stableJSON(_ content: GeneratedContent) -> String {
 /// host of the API that wrote it, and the fields go back only to that host. A transcript
 /// carried to another one replays the messages without them.
 private struct ChatCompletionsReasoning {
-    private static let provider = GeneratedContent("openai.chatCompletions")
     private enum Field {
         static let reasoning = "reasoning"
         static let reasoningContent = "reasoning_content"
@@ -1554,7 +1553,7 @@ private struct ChatCompletionsReasoning {
     /// The fields kept in `entry`, for a request to `host`: empty for a missing entry,
     /// another provider's, or one written by another host.
     init(_ entry: Transcript.Reasoning?, sentTo host: String?) {
-        guard let entry, entry.metadata["provider"] == Self.provider else { return }
+        guard let entry, entry.origin == .chatCompletions else { return }
         func string(_ key: String) -> String { (try? entry.metadata[key]?.value(String.self)) ?? "" }
         guard let host, !host.isEmpty, string(Field.host) == host else { return }
         self.host = host
@@ -1593,12 +1592,12 @@ private struct ChatCompletionsReasoning {
             metadata[Field.reasoningDetails] = GeneratedContent(String(decoding: data, as: UTF8.self))
         }
         guard !metadata.isEmpty else { return nil }
-        metadata["provider"] = Self.provider
         if !host.isEmpty { metadata[Field.host] = GeneratedContent(host) }
         let id = UUID().uuidString
         let text = reasoningContent.isEmpty ? reasoning : reasoningContent
         return Transcript.Reasoning(
             id: id,
+            origin: .chatCompletions,
             metadata: metadata,
             segments: text.isEmpty ? [] : [.text(.init(id: id + ":text", content: text))]
         )
