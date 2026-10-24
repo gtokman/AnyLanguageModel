@@ -1209,6 +1209,12 @@ private enum Responses {
                                 "type": .string("input_image"),
                                 "image_url": .string(url),
                             ])
+                        case .file(let filename, let dataURL):
+                            return .object([
+                                "type": .string("input_file"),
+                                "filename": .string(filename),
+                                "file_data": .string(dataURL),
+                            ])
                         }
                     }
                 }
@@ -1234,6 +1240,12 @@ private enum Responses {
                                 return .object([
                                     "type": .string("input_image"),
                                     "image_url": .string(url),
+                                ])
+                            case .file(let filename, let dataURL):
+                                return .object([
+                                    "type": .string("input_file"),
+                                    "filename": .string(filename),
+                                    "file_data": .string(dataURL),
                                 ])
                             }
                         }
@@ -1724,6 +1736,9 @@ private struct OpenAIMessage: Hashable, Codable, Sendable {
 private enum Block: Hashable, Codable, Sendable {
     case text(String)
     case imageURL(String)
+    /// A document (a PDF) as a data URL: sent as a file part, which providers that read
+    /// documents take, rather than as an image.
+    case file(filename: String, dataURL: String)
 
     var jsonValueForChatCompletions: JSONValue {
         switch self {
@@ -1733,6 +1748,11 @@ private enum Block: Hashable, Codable, Sendable {
             return .object([
                 "type": .string("image_url"),
                 "image_url": .object(["url": .string(url)]),
+            ])
+        case .file(let filename, let dataURL):
+            return .object([
+                "type": .string("file"),
+                "file": .object(["filename": .string(filename), "file_data": .string(dataURL)]),
             ])
         }
     }
@@ -1746,6 +1766,12 @@ private enum Block: Hashable, Codable, Sendable {
             return .object([
                 "type": .string("input_image"),
                 "image_url": .object(["url": .string(url)]),
+            ])
+        case .file(let filename, let dataURL):
+            return .object([
+                "type": .string("input_file"),
+                "filename": .string(filename),
+                "file_data": .string(dataURL),
             ])
         }
     }
@@ -1772,7 +1798,11 @@ private func convertSegmentsToOpenAIBlocks(_ segments: [Transcript.Segment]) -> 
             case .data(let data, let mimeType):
                 let b64 = data.base64EncodedString()
                 let dataURL = "data:\(mimeType);base64,\(b64)"
-                blocks.append(.imageURL(dataURL))
+                if mimeType == "application/pdf" {
+                    blocks.append(.file(filename: "document.pdf", dataURL: dataURL))
+                } else {
+                    blocks.append(.imageURL(dataURL))
+                }
             }
         }
     }
