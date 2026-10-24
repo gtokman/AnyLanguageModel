@@ -28,10 +28,15 @@ struct ReportedUsage: Sendable {
 
     var metadata: [String: GeneratedContent]
 
-    init(input: Input = .init(), output: Output = .init(), metadata: [String: GeneratedContent] = [:]) {
+    /// What the request cost in US dollars, when the provider says (the Vercel AI Gateway's
+    /// `usage.cost`).
+    var cost: Double?
+
+    init(input: Input = .init(), output: Output = .init(), metadata: [String: GeneratedContent] = [:], cost: Double? = nil) {
         self.input = input
         self.output = output
         self.metadata = metadata
+        self.cost = cost
     }
 
     /// Converts omitted wire counts to the public API's zero defaults.
@@ -42,14 +47,15 @@ struct ReportedUsage: Sendable {
                 totalTokenCount: output.totalTokenCount ?? 0,
                 reasoningTokenCount: output.reasoningTokenCount ?? 0
             ),
-            metadata: metadata
+            metadata: metadata,
+            cost: cost
         )
     }
 
     var isEmpty: Bool {
         input.totalTokenCount == nil && input.cachedTokenCount == nil
             && output.totalTokenCount == nil && output.reasoningTokenCount == nil
-            && metadata.isEmpty
+            && metadata.isEmpty && cost == nil
     }
 
     var normalized: Self? { isEmpty ? nil : self }
@@ -68,6 +74,7 @@ struct ReportedUsage: Sendable {
         output.totalTokenCount = sum(output.totalTokenCount, other.output.totalTokenCount)
         output.reasoningTokenCount = sum(output.reasoningTokenCount, other.output.reasoningTokenCount)
         metadata.merge(other.metadata) { _, latest in latest }
+        if cost != nil || other.cost != nil { cost = (cost ?? 0) + (other.cost ?? 0) }
     }
 
     /// Applies cumulative streaming updates;
@@ -79,6 +86,7 @@ struct ReportedUsage: Sendable {
         output.totalTokenCount = other.output.totalTokenCount ?? output.totalTokenCount
         output.reasoningTokenCount = other.output.reasoningTokenCount ?? output.reasoningTokenCount
         metadata.merge(other.metadata) { _, latest in latest }
+        cost = other.cost ?? cost
     }
 }
 

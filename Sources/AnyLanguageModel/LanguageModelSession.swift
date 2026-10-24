@@ -565,6 +565,12 @@ public final class LanguageModelSession: @unchecked Sendable {
         /// Additional usage statistics supplied by the model.
         public var metadata: [String: GeneratedContent]
 
+        /// What the requests cost in US dollars, as the provider reported it (the Vercel AI
+        /// Gateway does, at its list prices, cache discounts included); nil when it didn't.
+        ///
+        /// - Note: This property is exclusive to AnyLanguageModel.
+        public var cost: Double?
+
         /// The sum of the input and output token counts.
         public var totalTokenCount: Int {
             input.totalTokenCount + output.totalTokenCount
@@ -580,11 +586,13 @@ public final class LanguageModelSession: @unchecked Sendable {
         public init(
             input: Input,
             output: Output,
-            metadata: [String: any ConvertibleToGeneratedContent] = [:]
+            metadata: [String: any ConvertibleToGeneratedContent] = [:],
+            cost: Double? = nil
         ) {
             self.input = input
             self.output = output
             self.metadata = metadata.mapValues { $0.generatedContent }
+            self.cost = cost
         }
 
         static let zero = Self(
@@ -600,6 +608,7 @@ public final class LanguageModelSession: @unchecked Sendable {
             output.totalTokenCount += other.output.totalTokenCount
             output.reasoningTokenCount += other.output.reasoningTokenCount
             metadata.merge(other.metadata) { _, latest in latest }
+            if cost != nil || other.cost != nil { cost = (cost ?? 0) + (other.cost ?? 0) }
         }
 
         /// Returns counts not yet accounted for in this stream,
@@ -613,6 +622,11 @@ public final class LanguageModelSession: @unchecked Sendable {
             }
             let changedMetadata = metadata.filter { previous.metadata[$0.key] != $0.value }
             previous.metadata.merge(changedMetadata) { _, latest in latest }
+            var costIncrease: Double?
+            if let cost {
+                costIncrease = max(0, cost - (previous.cost ?? 0))
+                previous.cost = max(previous.cost ?? 0, cost)
+            }
             return Self(
                 input: .init(
                     totalTokenCount: increase(input.totalTokenCount, &previous.input.totalTokenCount),
@@ -622,7 +636,8 @@ public final class LanguageModelSession: @unchecked Sendable {
                     totalTokenCount: increase(output.totalTokenCount, &previous.output.totalTokenCount),
                     reasoningTokenCount: increase(output.reasoningTokenCount, &previous.output.reasoningTokenCount)
                 ),
-                metadata: changedMetadata
+                metadata: changedMetadata,
+                cost: costIncrease
             )
         }
     }

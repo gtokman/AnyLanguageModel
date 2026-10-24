@@ -9,7 +9,8 @@ import JSONSchema
 ///
 /// Use this model to generate text using OpenAI's Chat Completions or Responses APIs.
 /// You can specify a custom base URL to work with OpenAI-compatible services.
-/// Chat Completions streaming usage is requested only for the official OpenAI endpoint.
+/// Chat Completions streaming usage is requested only for the official OpenAI endpoint and the
+/// Vercel AI Gateway, which also reports each request's cost.
 ///
 /// ```swift
 /// let model = OpenAILanguageModel(
@@ -24,6 +25,12 @@ public struct OpenAILanguageModel: LanguageModel {
 
     /// The default base URL for OpenAI's API.
     public static let defaultBaseURL = URL(string: "https://api.openai.com/v1/")!
+
+    /// Whether streamed Chat Completions from `baseURL` can report usage
+    /// (`stream_options.include_usage`): OpenAI's own, and the Vercel AI Gateway's.
+    static func reportsStreamingUsage(_ baseURL: URL) -> Bool {
+        baseURL.host == defaultBaseURL.host || baseURL.host == "ai-gateway.vercel.sh"
+    }
 
     /// The OpenAI API variant to use.
     public enum APIVariant: Sendable {
@@ -845,7 +852,7 @@ public struct OpenAILanguageModel: LanguageModel {
                                 schema: responseSchema.schema,
                                 options: options,
                                 stream: true,
-                                includeUsage: baseURL.host == Self.defaultBaseURL.host
+                                includeUsage: Self.reportsStreamingUsage(baseURL)
                             )
                         }
                         let body = try JSONEncoder().encode(params)
@@ -2359,12 +2366,15 @@ private struct ChatCompletionsUsage: Decodable, Sendable {
     let completionTokens: Int?
     let promptTokensDetails: ResponsesUsage.InputDetails?
     let completionTokensDetails: ResponsesUsage.OutputDetails?
+    /// The Vercel AI Gateway's: what the request cost, in US dollars.
+    let cost: Double?
 
     enum CodingKeys: String, CodingKey {
         case promptTokens = "prompt_tokens"
         case completionTokens = "completion_tokens"
         case promptTokensDetails = "prompt_tokens_details"
         case completionTokensDetails = "completion_tokens_details"
+        case cost
     }
 
     var reportedUsage: ReportedUsage? {
@@ -2373,7 +2383,8 @@ private struct ChatCompletionsUsage: Decodable, Sendable {
             output: .init(
                 totalTokenCount: completionTokens,
                 reasoningTokenCount: completionTokensDetails?.reasoningTokens
-            )
+            ),
+            cost: cost
         ).normalized
     }
 }
