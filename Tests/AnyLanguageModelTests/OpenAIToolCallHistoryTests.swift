@@ -157,9 +157,9 @@ import Testing
 
         /// Hands over one message, once: someone steering the response while a tool runs.
         private final class SteeringDelegate: ToolExecutionDelegate, @unchecked Sendable {
-            private var pending = ["Skip the umbrella advice."]
+            private var pending = [AnyLanguageModel.Prompt("Skip the umbrella advice.")]
 
-            func pendingMessages(in session: LanguageModelSession) async -> [String] {
+            func pendingMessages(in session: LanguageModelSession) async -> [AnyLanguageModel.Prompt] {
                 defer { pending = [] }
                 return pending
             }

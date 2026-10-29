@@ -605,7 +605,7 @@ public struct OpenAILanguageModel: LanguageModel {
                                 )
                             )
                         }
-                        for (entry, message) in await pendingMessages(for: session) {
+                        for (entry, message) in try await pendingMessages(for: session) {
                             entries.append(entry)
                             inFlightMessages.append(message)
                         }
@@ -731,7 +731,7 @@ public struct OpenAILanguageModel: LanguageModel {
                                 )
                             )
                         }
-                        for (entry, message) in await pendingMessages(for: session) {
+                        for (entry, message) in try await pendingMessages(for: session) {
                             entries.append(entry)
                             inFlightMessages.append(message)
                         }
@@ -976,7 +976,7 @@ public struct OpenAILanguageModel: LanguageModel {
                                     )
                                 )
                             }
-                            for (entry, message) in await pendingMessages(for: session) {
+                            for (entry, message) in try await pendingMessages(for: session) {
                                 state.entries.append(entry)
                                 inFlightMessages.append(message)
                             }
@@ -1495,11 +1495,12 @@ private func toolCallsMessage(_ calls: Transcript.ToolCalls, reasoning: Transcri
 /// The messages the session's delegate wants added before the next request
 /// (`ToolExecutionDelegate.pendingMessages(in:)`), as prompt entries and as the user messages
 /// a transcript replays them as, so the request is the same now and in later responses.
-private func pendingMessages(for session: LanguageModelSession) async -> [(Transcript.Entry, OpenAIMessage)] {
+private func pendingMessages(for session: LanguageModelSession) async throws -> [(Transcript.Entry, OpenAIMessage)] {
     guard let delegate = session.toolExecutionDelegate else { return [] }
-    return await delegate.pendingMessages(in: session).map { text in
-        let segments: [Transcript.Segment] = [.text(.init(content: text))]
-        let entry = Transcript.Entry.prompt(Transcript.Prompt(segments: segments))
+    return try await delegate.pendingMessages(in: session).map { message in
+        let id = UUID().uuidString
+        let segments = try message.makeTranscriptSegments(occurrenceID: id)
+        let entry = Transcript.Entry.prompt(Transcript.Prompt(id: id, segments: segments))
         return (entry, OpenAIMessage(role: .user, content: .blocks(convertSegmentsToOpenAIBlocks(segments))))
     }
 }

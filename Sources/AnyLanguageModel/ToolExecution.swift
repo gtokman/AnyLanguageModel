@@ -73,7 +73,7 @@ public protocol ToolExecutionDelegate: Sendable {
     ///
     /// - Parameter session: The session generating the response.
     /// - Returns: The messages to add, oldest first; empty for none.
-    func pendingMessages(in session: LanguageModelSession) async -> [String]
+    func pendingMessages(in session: LanguageModelSession) async -> [Prompt]
 }
 
 // MARK: - Default Implementations
@@ -105,5 +105,5 @@ extension ToolExecutionDelegate {
     ) async {}
 
     /// Provides a default implementation that adds no messages.
-    public func pendingMessages(in session: LanguageModelSession) async -> [String] { [] }
+    public func pendingMessages(in session: LanguageModelSession) async -> [Prompt] { [] }
 }
